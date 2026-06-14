@@ -4,7 +4,7 @@ import time
 import httpx
 
 from app.config import get_settings
-from app.services.collector.types import StockInfo
+from app.services.collector.types import KlineBar, StockInfo
 
 _LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 _KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
@@ -80,6 +80,54 @@ class EastMoneyClient:
                 )
             )
         return result
+
+    async def fetch_daily_kline(
+        self, secid: str, beg: str, end: str
+    ) -> list[KlineBar]:
+        """拉取前复权日K。secid 形如 '1.600519'，beg/end 形如 '20200101'。"""
+        await self._throttle()
+        params = {
+            "secid": secid,
+            "klt": "101",  # 日K
+            "fqt": "1",  # 前复权
+            "beg": beg,
+            "end": end,
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        }
+        resp = await self._client.get(_KLINE_URL, params=params)
+        resp.raise_for_status()
+        klines = (resp.json().get("data") or {}).get("klines") or []
+        bars = []
+        for line in klines:
+            parts = line.split(",")
+            # f51..f61: 日期,开,收,高,低,量,额,振幅,涨跌幅,涨跌额,换手率
+            open_, close, high, low = (
+                float(parts[1]),
+                float(parts[2]),
+                float(parts[3]),
+                float(parts[4]),
+            )
+            vol = int(float(parts[5]))
+            amount = float(parts[6])
+            pct = float(parts[8]) if parts[8] else 0.0
+            turnover = float(parts[10]) if parts[10] else 0.0
+            vwap = round(amount / (vol * 100), 3) if vol > 0 else 0.0
+            bars.append(
+                KlineBar(
+                    date=parts[0],
+                    open=open_,
+                    close=close,
+                    high=high,
+                    low=low,
+                    volume=vol,
+                    amount=amount,
+                    pct_change=pct,
+                    turnover_rate=turnover,
+                    vwap=vwap,
+                )
+            )
+        return bars
 
     async def aclose(self) -> None:
         await self._client.aclose()
