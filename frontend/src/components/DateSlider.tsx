@@ -25,7 +25,7 @@ export default function DateSlider({
         value={value}
         onChange={onChange}
         marks={marks}
-        tooltip={{ formatter: (i) => dates[i] ?? "" }}
+        tooltip={{ formatter: (i?: number) => (i != null ? dates[i] ?? "" : "") }}
       />
     </div>
   );
