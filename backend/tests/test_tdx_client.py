@@ -12,10 +12,10 @@ def _fake_df():
         "high": [10.6], "low": [10.1], "vol": [1000.0], "amount": [1050000.0],
     }
     for i in range(1, 6):
-        data[f"buy_price{i}"] = [10.4 - i * 0.01]
-        data[f"buy_vol{i}"] = [100.0 * i]
-        data[f"sell_price{i}"] = [10.6 + i * 0.01]
-        data[f"sell_vol{i}"] = [200.0 * i]
+        data[f"bid{i}"] = [10.4 - i * 0.01]
+        data[f"bid_vol{i}"] = [100.0 * i]
+        data[f"ask{i}"] = [10.6 + i * 0.01]
+        data[f"ask_vol{i}"] = [200.0 * i]
     return pd.DataFrame(data)
 
 

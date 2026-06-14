@@ -37,11 +37,11 @@ class TdxClient:
     def _parse(df, symbol: str) -> RealtimeQuote:
         row = df.iloc[0]
         bids = [
-            (float(row[f"buy_price{i}"]), float(row[f"buy_vol{i}"]))
+            (float(row[f"bid{i}"]), float(row[f"bid_vol{i}"]))
             for i in range(1, 6)
         ]
         asks = [
-            (float(row[f"sell_price{i}"]), float(row[f"sell_vol{i}"]))
+            (float(row[f"ask{i}"]), float(row[f"ask_vol{i}"]))
             for i in range(1, 6)
         ]
         return RealtimeQuote(
