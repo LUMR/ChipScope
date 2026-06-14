@@ -4,17 +4,18 @@ import time
 import httpx
 
 from app.config import get_settings
+from app.services.collector.retry import em_retry
 from app.services.collector.types import KlineBar, StockInfo
 
 _LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 _KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+_HOLDERS_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 # 东财 fs：沪深主板/创业板/科创板（北交所 m:0 t:81 留待后续）
 _A_SHARE_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
 
 
 def _market_of(f13: int) -> str:
-    # f13: 1=沪, 0=深
     return "SH" if f13 == 1 else "SZ"
 
 
@@ -53,15 +54,9 @@ class EastMoneyClient:
     async def list_stocks(self) -> list[StockInfo]:
         await self._throttle()
         params = {
-            "pn": 1,
-            "pz": 10000,
-            "po": 1,
-            "np": 1,
-            "fltt": 2,
-            "invt": 2,
-            "fid": "f3",
-            "fs": _A_SHARE_FS,
-            "fields": "f12,f13,f14",
+            "pn": 1, "pz": 10000, "po": 1, "np": 1,
+            "fltt": 2, "invt": 2, "fid": "f3",
+            "fs": _A_SHARE_FS, "fields": "f12,f13,f14",
         }
         resp = await self._client.get(_LIST_URL, params=params)
         resp.raise_for_status()
@@ -81,17 +76,11 @@ class EastMoneyClient:
             )
         return result
 
-    async def fetch_daily_kline(
-        self, secid: str, beg: str, end: str
-    ) -> list[KlineBar]:
-        """拉取前复权日K。secid 形如 '1.600519'，beg/end 形如 '20200101'。"""
+    async def fetch_daily_kline(self, secid: str, beg: str, end: str) -> list[KlineBar]:
         await self._throttle()
         params = {
-            "secid": secid,
-            "klt": "101",  # 日K
-            "fqt": "1",  # 前复权
-            "beg": beg,
-            "end": end,
+            "secid": secid, "klt": "101", "fqt": "1",
+            "beg": beg, "end": end,
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         }
@@ -101,12 +90,8 @@ class EastMoneyClient:
         bars = []
         for line in klines:
             parts = line.split(",")
-            # f51..f61: 日期,开,收,高,低,量,额,振幅,涨跌幅,涨跌额,换手率
             open_, close, high, low = (
-                float(parts[1]),
-                float(parts[2]),
-                float(parts[3]),
-                float(parts[4]),
+                float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]),
             )
             vol = int(float(parts[5]))
             amount = float(parts[6])
@@ -115,19 +100,26 @@ class EastMoneyClient:
             vwap = round(amount / (vol * 100), 3) if vol > 0 else 0.0
             bars.append(
                 KlineBar(
-                    date=parts[0],
-                    open=open_,
-                    close=close,
-                    high=high,
-                    low=low,
-                    volume=vol,
-                    amount=amount,
-                    pct_change=pct,
-                    turnover_rate=turnover,
-                    vwap=vwap,
+                    date=parts[0], open=open_, close=close, high=high, low=low,
+                    volume=vol, amount=amount, pct_change=pct,
+                    turnover_rate=turnover, vwap=vwap,
                 )
             )
         return bars
+
+    @em_retry
+    async def fetch_holders(self, secucode: str) -> list[dict]:
+        """十大流通股东。secucode 形如 '600519.SH'。"""
+        await self._throttle()
+        params = {
+            "reportName": "RPT_F10_EH_FREEHOLDERS",
+            "filter": f'(SECUCODE="{secucode}")',
+            "columns": "ALL",
+            "pageSize": 50,
+        }
+        resp = await self._client.get(_HOLDERS_URL, params=params)
+        resp.raise_for_status()
+        return (resp.json().get("result") or {}).get("data") or []
 
     async def aclose(self) -> None:
         await self._client.aclose()
