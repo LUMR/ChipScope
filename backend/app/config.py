@@ -1,10 +1,15 @@
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/.env，路径与 cwd 无关
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="CHIPSCOPE_", env_file=".env", extra="ignore"
+        env_prefix="CHIPSCOPE_", env_file=_ENV_FILE, extra="ignore"
     )
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/chipscope"
