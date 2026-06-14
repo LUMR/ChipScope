@@ -5,8 +5,12 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
+from app.models.flow import MoneyFlow
+from app.models.holder import TopHolder
 from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.schemas.flow import FlowOut
+from app.schemas.holder import HolderOut
 from app.schemas.kline import KlineOut
 from app.schemas.stock import StockOut
 
@@ -42,5 +46,35 @@ async def get_kline(
     if end:
         stmt = stmt.where(DailyKline.ts <= end)
     stmt = stmt.order_by(DailyKline.ts).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    return rows
+
+
+@router.get("/{secucode}/holders", response_model=list[HolderOut])
+async def get_holders(
+    secucode: str,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(TopHolder)
+        .where(TopHolder.secucode == secucode)
+        .order_by(TopHolder.ts.desc(), TopHolder.rank)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return rows
+
+
+@router.get("/{secucode}/flow", response_model=list[FlowOut])
+async def get_flow(
+    secucode: str,
+    limit: int = Query(120, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(MoneyFlow)
+        .where(MoneyFlow.secucode == secucode)
+        .order_by(MoneyFlow.ts.desc())
+        .limit(limit)
+    )
     rows = (await db.execute(stmt)).scalars().all()
     return rows
