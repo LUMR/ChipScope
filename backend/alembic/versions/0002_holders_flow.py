@@ -49,10 +49,6 @@ def upgrade() -> None:
         sa.Column("small_net", sa.Numeric(18, 2)),
         sa.PrimaryKeyConstraint("secucode", "ts"),
     )
-    op.execute(
-        "SELECT create_hypertable('money_flow', 'ts', "
-        "chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);"
-    )
 
 
 def downgrade() -> None:

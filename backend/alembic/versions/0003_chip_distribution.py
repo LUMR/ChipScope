@@ -32,10 +32,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("secucode", "ts"),
     )
     op.execute(
-        "SELECT create_hypertable('chip_distribution', 'ts', "
-        "chunk_time_interval => INTERVAL '30 days', if_not_exists => TRUE);"
-    )
-    op.execute(
         "CREATE INDEX idx_chip_dist_gin ON chip_distribution USING GIN (distribution);"
     )
 

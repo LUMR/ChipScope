@@ -1,4 +1,4 @@
-"""init schema with stock_meta and daily_kline hypertable
+"""init schema with stock_meta and daily_kline
 
 Revision ID: 0001
 Revises:
@@ -17,8 +17,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
-
     op.create_table(
         "stock_meta",
         sa.Column("secucode", sa.String(12), primary_key=True),
@@ -46,12 +44,6 @@ def upgrade() -> None:
         sa.Column("vwap", sa.Numeric(10, 3)),
         sa.ForeignKeyConstraint(["secucode"], ["stock_meta.secucode"]),
         sa.PrimaryKeyConstraint("secucode", "ts"),
-    )
-    # TimescaleDB 超表：按 30 天分块
-    op.execute(
-        "SELECT create_hypertable('daily_kline', 'ts', "
-        "chunk_time_interval => INTERVAL '30 days', "
-        "if_not_exists => TRUE);"
     )
     op.create_index("ix_daily_kline_ts", "daily_kline", ["ts"])
 

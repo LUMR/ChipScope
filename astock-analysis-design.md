@@ -1,8 +1,9 @@
 # ChipScope — A股股价与筹码分布分析系统
 
-> **版本:** v1.1  
+> **版本:** v1.2  
 > **日期:** 2026-06-14  
 > **状态:** 设计阶段  
+> **变更:** v1.2 — 数据库从 TimescaleDB 迁至普通 PostgreSQL  
 > **变更:** v1.1 — 数据源改用通达信(mootdx)为主，东财降为辅助源
 
 ---
@@ -38,7 +39,7 @@
 │  (mootdx+    │  (NumPy)    │                        │
 │   aiohttp)   │             │                        │
 ├──────────────┴──────────────┴────────────────────────┤
-│              PostgreSQL + TimescaleDB                  │
+│              PostgreSQL                             │
 │     K线时序表 · 筹码快照JSONB · 股东表 · 元数据         │
 ├─────────────────────────────────────────────────────┤
 │                   Redis (缓存层)                       │
@@ -143,7 +144,11 @@ GET https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get
 
 ## 三、数据库设计
 
-### 3.1 PostgreSQL + TimescaleDB
+### 3.1 PostgreSQL
+
+> **说明：** 数据库采用普通 PostgreSQL，业务表为标准关系表（chip_distribution 用 JSONB + GIN 索引）。
+> 当前数据量下无需时序自动分区；若未来多年累积导致表膨胀，可平滑切换至 PG 声明式分区
+> （`PARTITION BY RANGE(ts)`）或回迁 TimescaleDB（启用 compression + `drop_chunks`）。
 
 ```sql
 -- ============ 1. 股票基础信息 ============
@@ -159,7 +164,7 @@ CREATE TABLE stock_meta (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ============ 2. 日K线（TimescaleDB超表）============
+-- ============ 2. 日K线 ============
 CREATE TABLE daily_kline (
     ts              TIMESTAMPTZ NOT NULL,
     secucode        VARCHAR(12) NOT NULL,
@@ -174,7 +179,6 @@ CREATE TABLE daily_kline (
     vwap            NUMERIC(10,3),  -- 均价 = amount/volume/100
     PRIMARY KEY (secucode, ts)
 );
-SELECT create_hypertable('daily_kline', 'ts');
 
 -- ============ 3. 筹码分布快照（核心）============
 CREATE TABLE chip_distribution (
@@ -189,7 +193,6 @@ CREATE TABLE chip_distribution (
     avg_cost        NUMERIC(10,3),     -- 平均持仓成本
     PRIMARY KEY (secucode, ts)
 );
-SELECT create_hypertable('chip_distribution', 'ts');
 
 -- GIN索引：支持JSONB查询特定价位筹码
 CREATE INDEX idx_chip_dist ON chip_distribution USING GIN (distribution);
@@ -228,7 +231,6 @@ CREATE TABLE money_flow (
     small_net       NUMERIC(18,2),  -- 小单
     PRIMARY KEY (secucode, ts)
 );
-SELECT create_hypertable('money_flow', 'ts');
 ```
 
 ### 3.2 存储估算
@@ -510,7 +512,7 @@ chipscope/
 version: '3.8'
 services:
   db:
-    image: timescale/timescaledb:latest-pg15
+    image: postgres:15
     environment:
       POSTGRES_DB: chipscope
       POSTGRES_PASSWORD: ${DB_PASSWORD}
