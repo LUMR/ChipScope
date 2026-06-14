@@ -10,6 +10,8 @@ from app.config import get_settings
 from app.models.base import Base
 import app.models.stock  # noqa: F401  注册模型
 import app.models.kline  # noqa: F401
+import app.models.holder  # noqa: F401
+import app.models.flow  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
