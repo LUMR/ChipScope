@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 本地环境配置（含连接串，不入库）
+backend/.env
+
+# IDE
+.vscode/
+.idea/
