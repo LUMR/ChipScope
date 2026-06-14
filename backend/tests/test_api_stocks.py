@@ -5,7 +5,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.utils.time import trading_day_ts
 
 
 @pytest.fixture
@@ -22,8 +24,20 @@ def sample_stocks():
     ]
 
 
+@pytest.fixture
+def sample_klines():
+    return [
+        DailyKline(
+            ts=trading_day_ts("2026-06-13"), secucode="600519.SH",
+            open=1680, close=1685, high=1690, low=1675,
+            volume=10000, amount=1.683e9, turnover_rate=0.8,
+            pct_change=0.3, vwap=1683.0,
+        )
+    ]
+
+
 @pytest_asyncio.fixture
-async def api_client(sample_stocks):
+async def api_client(sample_stocks, sample_klines):
     """独立 engine + 覆盖 get_db 依赖。
 
     覆盖 get_db 让请求走测试 engine，避免触碰 app.database 的模块级 engine
@@ -36,6 +50,9 @@ async def api_client(sample_stocks):
         await conn.execute(text("TRUNCATE stock_meta, daily_kline CASCADE"))
     async with SessionLocal() as s:
         s.add_all(sample_stocks)
+        await s.commit()
+        # DailyKline 有 FK 到 stock_meta，需先提交 stocks 再插 K 线
+        s.add_all(sample_klines)
         await s.commit()
 
     async def override_get_db():
@@ -77,3 +94,20 @@ async def test_list_stocks_search_by_name(api_client):
     data = r.json()
     assert len(data) == 1
     assert data[0]["name"] == "平安银行"
+
+
+@pytest.mark.asyncio
+async def test_get_kline_returns_bars(api_client):
+    r = await api_client.get("/api/stocks/600519.SH/kline")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["close"] == 1685.0
+    assert data[0]["vwap"] == 1683.0
+
+
+@pytest.mark.asyncio
+async def test_get_kline_empty_for_unknown(api_client):
+    r = await api_client.get("/api/stocks/999999.SH/kline")
+    assert r.status_code == 200
+    assert r.json() == []

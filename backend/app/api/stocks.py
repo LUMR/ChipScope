@@ -1,9 +1,13 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
+from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.schemas.kline import KlineOut
 from app.schemas.stock import StockOut
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
@@ -20,5 +24,23 @@ async def list_stocks(
         like = f"%{q}%"
         stmt = stmt.where(or_(StockMeta.code.like(like), StockMeta.name.like(like)))
     stmt = stmt.limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    return rows
+
+
+@router.get("/{secucode}/kline", response_model=list[KlineOut])
+async def get_kline(
+    secucode: str,
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    limit: int = Query(500, le=5000),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(DailyKline).where(DailyKline.secucode == secucode)
+    if start:
+        stmt = stmt.where(DailyKline.ts >= start)
+    if end:
+        stmt = stmt.where(DailyKline.ts <= end)
+    stmt = stmt.order_by(DailyKline.ts).limit(limit)
     rows = (await db.execute(stmt)).scalars().all()
     return rows
