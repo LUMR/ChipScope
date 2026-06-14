@@ -27,9 +27,9 @@ async def db_session():
     )
 
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE stock_meta, daily_kline CASCADE"))
+        await conn.execute(text("TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"))
     async with SessionLocal() as session:
         yield session
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE stock_meta, daily_kline CASCADE"))
+        await conn.execute(text("TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"))
     await engine.dispose()

@@ -1,7 +1,11 @@
 import httpx
 import pytest
+from sqlalchemy import select
 
+from app.models.holder import HolderSummary
 from app.services.collector.eastmoney import EastMoneyClient
+from app.services.collector.types import StockInfo
+from app.services.ingest import upsert_holders, upsert_stock_meta
 
 
 @pytest.mark.asyncio
@@ -38,3 +42,21 @@ async def test_fetch_holders_empty(respx_mock):
     )
     async with EastMoneyClient() as em:
         assert await em.fetch_holders("600519.SH") == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_holders_computes_decay(db_session):
+    rows = [
+        {"NOTICE_DATE": "2026-03-31", "HOLDER_NAME": "A", "HOLD_NUM": 1000,
+         "HOLD_RATIO": 50.0, "HOLDER_NEW": 0},
+    ]
+    n = await upsert_holders(db_session, "600519.SH", rows)
+    assert n == 1
+    s = (
+        await db_session.execute(
+            select(HolderSummary).execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    assert float(s.top10_ratio) == 50.0
+    # 衰减系数 A = 1/(1 - 0.5) = 2.0
+    assert float(s.decay_coeff) == 2.0

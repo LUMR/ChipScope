@@ -121,5 +121,19 @@ class EastMoneyClient:
         resp.raise_for_status()
         return (resp.json().get("result") or {}).get("data") or []
 
+    @em_retry
+    async def fetch_money_flow(self, secid: str, lmt: int = 120) -> list[str]:
+        """资金流向日K。返回 klines 原始字符串列表。"""
+        await self._throttle()
+        url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+        params = {
+            "secid": secid, "lmt": lmt, "klt": "101",
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+        }
+        resp = await self._client.get(url, params=params)
+        resp.raise_for_status()
+        return (resp.json().get("data") or {}).get("klines") or []
+
     async def aclose(self) -> None:
         await self._client.aclose()
