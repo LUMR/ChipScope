@@ -28,7 +28,7 @@
 - `backend/app/models/watchlist.py` — `Watchlist` ORM 模型
 - `backend/app/schemas/watchlist.py` — `WatchlistItemOut` / `WatchlistCreateRequest` / `ReorderRequest`
 - `backend/app/api/watchlist.py` — CRUD router
-- `backend/alembic/versions/0002_watchlist.py` — 建表 migration
+- `backend/alembic/versions/0004_watchlist.py` — 建表 migration
 - `backend/tests/test_api_watchlist.py` — API 测试
 - `backend/tests/test_scheduler_watchlist.py` — scheduler 读列表测试
 
@@ -109,17 +109,17 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 2: Alembic migration + env.py 注册
 
 **Files:**
-- Create: `backend/alembic/versions/0002_watchlist.py`
+- Create: `backend/alembic/versions/0004_watchlist.py`
 - Modify: `backend/alembic/env.py`（加 `import app.models.watchlist  # noqa: F401`）
 
 - [ ] **Step 1: 写 migration**
 
 ```python
-# backend/alembic/versions/0002_watchlist.py
+# backend/alembic/versions/0004_watchlist.py
 """add watchlist table
 
-Revision ID: 0002
-Revises: 0001
+Revision ID: 0004
+Revises: 0003
 Create Date: 2026-06-15
 """
 from typing import Sequence, Union
@@ -127,8 +127,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0002"
-down_revision: Union[str, None] = "0001"
+revision: str = "0004"
+down_revision: Union[str, None] = "0003"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -166,7 +166,7 @@ import app.models.watchlist  # noqa: F401
 ```bash
 cd backend && alembic upgrade head
 ```
-Expected: 输出 `Running upgrade 0001 -> 0002, add watchlist table`，无报错。
+Expected: 输出 `Running upgrade 0003 -> 0004, add watchlist table`，无报错。
 
 - [ ] **Step 4: 提交**
 
