@@ -27,6 +27,9 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
 
     const connect = () => {
       ws = new WebSocket(wsUrl());
+      ws.onopen = () => {
+        retry = 1000; // 连接成功后重置退避到基线
+      };
       ws.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data) as RealtimeQuote;
