@@ -1,10 +1,9 @@
 import { AutoComplete, Input, Popconfirm, Typography } from "antd";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { listStocks } from "../api/stocks";
+import { useStockSearch } from "../hooks/useStockSearch";
 import { useWatchlist } from "../hooks/useWatchlist";
 import { useQuote } from "../hooks/useRealtimeQuotes";
-import type { Stock } from "../types/domain";
 
 const { Text } = Typography;
 
@@ -13,26 +12,7 @@ export default function SiderWatchlist() {
   const { secucode: active } = useParams();
   const { items, add, remove } = useWatchlist();
   const [text, setText] = useState("");
-  const [opts, setOpts] = useState<{ value: string; label: string }[]>([]);
-
-  useEffect(() => {
-    if (!text) {
-      setOpts([]);
-      return;
-    }
-    let cancelled = false;
-    listStocks(text)
-      .then((stocks: Stock[]) => {
-        if (cancelled) return;
-        setOpts(
-          stocks.map((s) => ({ value: s.secucode, label: `${s.name} ${s.code}` }))
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [text]);
+  const opts = useStockSearch(text);
 
   return (
     <div style={{ padding: 12 }}>

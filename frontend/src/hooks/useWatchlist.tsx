@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   addWatchlist,
   getWatchlist,
@@ -7,7 +14,18 @@ import {
 } from "../api/watchlist";
 import type { WatchlistItem } from "../types/domain";
 
-export function useWatchlist() {
+export interface WatchlistState {
+  items: WatchlistItem[];
+  loading: boolean;
+  add: (secucode: string) => Promise<void>;
+  remove: (secucode: string) => Promise<void>;
+  reorder: (secucodes: string[]) => Promise<void>;
+  reload: () => Promise<void>;
+}
+
+const WatchlistContext = createContext<WatchlistState | null>(null);
+
+export function WatchlistProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -50,5 +68,19 @@ export function useWatchlist() {
     }
   }, [items]);
 
-  return { items, loading, add, remove, reorder, reload };
+  const value: WatchlistState = { items, loading, add, remove, reorder, reload };
+
+  return (
+    <WatchlistContext.Provider value={value}>
+      {children}
+    </WatchlistContext.Provider>
+  );
+}
+
+export function useWatchlist(): WatchlistState {
+  const ctx = useContext(WatchlistContext);
+  if (!ctx) {
+    throw new Error("useWatchlist must be used within a WatchlistProvider");
+  }
+  return ctx;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useWatchlist } from "./useWatchlist";
+import type { ReactNode } from "react";
+import { useWatchlist, WatchlistProvider } from "./useWatchlist";
 
 vi.mock("../api/watchlist", () => ({
   getWatchlist: vi.fn(),
@@ -16,6 +17,10 @@ const ITEM = (secucode: string, sort_order: number) => ({
   sort_order, created_at: "2026-06-15T00:00:00Z", price: null, pct_change: null,
 });
 
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <WatchlistProvider>{children}</WatchlistProvider>
+);
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getWatchlist).mockResolvedValue([ITEM("600519.SH", 0), ITEM("000001.SZ", 1)]);
@@ -23,12 +28,12 @@ beforeEach(() => {
 
 describe("useWatchlist", () => {
   it("loads items on mount", async () => {
-    const { result } = renderHook(() => useWatchlist());
+    const { result } = renderHook(() => useWatchlist(), { wrapper });
     await waitFor(() => expect(result.current.items).toHaveLength(2));
   });
 
   it("add reloads list", async () => {
-    const { result } = renderHook(() => useWatchlist());
+    const { result } = renderHook(() => useWatchlist(), { wrapper });
     await waitFor(() => expect(result.current.items).toHaveLength(2));
     vi.mocked(addWatchlist).mockResolvedValue(ITEM("000858.SZ", 2));
     vi.mocked(getWatchlist).mockResolvedValue([
@@ -40,7 +45,7 @@ describe("useWatchlist", () => {
   });
 
   it("remove does optimistic delete + persists", async () => {
-    const { result } = renderHook(() => useWatchlist());
+    const { result } = renderHook(() => useWatchlist(), { wrapper });
     await waitFor(() => expect(result.current.items).toHaveLength(2));
     vi.mocked(removeWatchlist).mockResolvedValue(undefined);
     await act(async () => { await result.current.remove("600519.SH"); });
@@ -51,7 +56,7 @@ describe("useWatchlist", () => {
   });
 
   it("reorder persists new order", async () => {
-    const { result } = renderHook(() => useWatchlist());
+    const { result } = renderHook(() => useWatchlist(), { wrapper });
     await waitFor(() => expect(result.current.items).toHaveLength(2));
     vi.mocked(reorderWatchlist).mockResolvedValue(undefined);
     await act(async () => {

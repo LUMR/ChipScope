@@ -1,35 +1,15 @@
 import { AutoComplete, Input, Menu } from "antd";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { listStocks } from "../api/stocks";
-import type { Stock } from "../types/domain";
+import { useStockSearch } from "../hooks/useStockSearch";
 
 export default function TopNav() {
   const nav = useNavigate();
   const loc = useLocation();
-  const [opts, setOpts] = useState<{ value: string; label: string }[]>([]);
   const [text, setText] = useState("");
+  const opts = useStockSearch(text);
 
   const activeKey = loc.pathname.startsWith("/watchlist") ? "watchlist" : "market";
-
-  useEffect(() => {
-    if (!text) {
-      setOpts([]);
-      return;
-    }
-    let cancelled = false;
-    listStocks(text)
-      .then((stocks: Stock[]) => {
-        if (cancelled) return;
-        setOpts(
-          stocks.map((s) => ({ value: s.secucode, label: `${s.name} ${s.code}` }))
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [text]);
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 24, height: "100%" }}>

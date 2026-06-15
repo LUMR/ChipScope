@@ -23,40 +23,18 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useEffect, useState } from "react";
-import { listStocks } from "../api/stocks";
+import { useState } from "react";
+import { useStockSearch } from "../hooks/useStockSearch";
 import { useWatchlist } from "../hooks/useWatchlist";
 import { useQuote } from "../hooks/useRealtimeQuotes";
-import type { Stock, WatchlistItem } from "../types/domain";
+import type { WatchlistItem } from "../types/domain";
 
 const { Title, Text } = Typography;
 
 export default function WatchlistPage() {
   const { items, loading, add, remove, reorder } = useWatchlist();
   const [text, setText] = useState("");
-  const [opts, setOpts] = useState<{ value: string; label: string }[]>([]);
-
-  useEffect(() => {
-    if (!text) {
-      setOpts([]);
-      return;
-    }
-    let cancelled = false;
-    listStocks(text)
-      .then((stocks: Stock[]) => {
-        if (cancelled) return;
-        setOpts(
-          stocks.map((s) => ({
-            value: s.secucode,
-            label: `${s.code} ${s.name}`,
-          }))
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [text]);
+  const opts = useStockSearch(text);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -181,7 +159,7 @@ function SortableRow(props: React.HTMLAttributes<HTMLTableRowElement> & { "data-
       ref={setNodeRef}
       style={{
         ...props.style,
-        transform: CSS.Transform.toString(transform),
+        transform: CSS.Transform.toString(transform) ?? undefined,
         transition,
         cursor: isDragging ? "grabbing" : "pointer",
         background: isDragging ? "#f0f5ff" : props.style?.background,
