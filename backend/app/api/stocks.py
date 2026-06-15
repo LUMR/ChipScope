@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
@@ -9,6 +9,7 @@ from app.models.flow import MoneyFlow
 from app.models.holder import TopHolder
 from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.services.collector.eastmoney import EastMoneyClient
 from app.schemas.flow import FlowOut
 from app.schemas.holder import HolderOut
 from app.schemas.kline import KlineOut
@@ -19,15 +20,16 @@ router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
 @router.get("", response_model=list[StockOut])
 async def list_stocks(
-    q: str | None = Query(None, description="按代码或名称模糊搜索"),
+    q: str | None = Query(None, description="按代码或名称模糊搜索；q 非空走东财实时联想"),
     limit: int = Query(50, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(StockMeta)
+    # q 非空：实时查东财 suggest（本地 stock_meta 不全，纯东财无盲区、永远最新）
     if q:
-        like = f"%{q}%"
-        stmt = stmt.where(or_(StockMeta.code.like(like), StockMeta.name.like(like)))
-    stmt = stmt.limit(limit)
+        async with EastMoneyClient() as em:
+            return await em.search_stocks(q, count=limit)
+    # q 为空：返回本地已采集的股票
+    stmt = select(StockMeta).limit(limit)
     rows = (await db.execute(stmt)).scalars().all()
     return rows
 

@@ -9,6 +9,8 @@ from app.models.flow import MoneyFlow
 from app.models.holder import TopHolder
 from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.services.collector.eastmoney import EastMoneyClient
+from app.services.collector.types import StockInfo
 from app.utils.time import trading_day_ts
 
 
@@ -97,17 +99,39 @@ async def test_list_stocks_no_filter(api_client):
 
 
 @pytest.mark.asyncio
-async def test_list_stocks_search_by_code(api_client):
-    r = await api_client.get("/api/stocks", params={"q": "600519"})
+async def test_list_stocks_search_by_code(api_client, monkeypatch):
+    """q 走东财：返回东财结果（含本地没有的股票）。"""
+    async def fake_search(self, q, count=10):
+        assert q == "600036"
+        return [StockInfo("600036.SH", "600036", "招商银行", "SH", "1.600036")]
+    monkeypatch.setattr(EastMoneyClient, "search_stocks", fake_search)
+    r = await api_client.get("/api/stocks", params={"q": "600036"})
     data = r.json()
-    assert len(data) == 1 and data[0]["secucode"] == "600519.SH"
+    assert len(data) == 1 and data[0]["secucode"] == "600036.SH"
 
 
 @pytest.mark.asyncio
-async def test_list_stocks_search_by_name(api_client):
-    r = await api_client.get("/api/stocks", params={"q": "平安"})
+async def test_list_stocks_search_by_name(api_client, monkeypatch):
+    async def fake_search(self, q, count=10):
+        return [StockInfo("000333.SZ", "000333", "美的集团", "SZ", "0.000333")]
+    monkeypatch.setattr(EastMoneyClient, "search_stocks", fake_search)
+    r = await api_client.get("/api/stocks", params={"q": "美的"})
     data = r.json()
-    assert len(data) == 1 and data[0]["name"] == "平安银行"
+    assert len(data) == 1 and data[0]["name"] == "美的集团"
+
+
+@pytest.mark.asyncio
+async def test_list_stocks_q_calls_eastmoney(api_client, monkeypatch):
+    """q 非空时确实调用了东财 search_stocks（而非查本地）。"""
+    calls = []
+
+    async def fake_search(self, q, count=10):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(EastMoneyClient, "search_stocks", fake_search)
+    await api_client.get("/api/stocks", params={"q": "茅台"})
+    assert calls == ["茅台"]
 
 
 @pytest.mark.asyncio

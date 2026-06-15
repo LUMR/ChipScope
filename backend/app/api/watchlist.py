@@ -11,6 +11,9 @@ from app.config import get_settings
 from app.models.stock import StockMeta
 from app.models.watchlist import Watchlist
 from app.schemas.watchlist import ReorderRequest, WatchlistCreateRequest, WatchlistItemOut
+from app.services.collector.eastmoney import EastMoneyClient
+from app.services.collector.types import StockInfo
+from app.services.ingest import upsert_stock_meta
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -51,6 +54,35 @@ async def list_watchlist(db: AsyncSession = Depends(get_db)):
     return out
 
 
+async def _ensure_stock_meta(db: AsyncSession, secucode: str) -> StockMeta | None:
+    """stock_meta 无该 secucode 时调东财查证并补元数据。
+
+    - 东财命中：upsert 真实元数据
+    - 东财明确查无（返回空列表）：返回 None（调用方应 400）
+    - 东财故障（网络/限流）：用 secucode 解析兜底（name 缺失，后续 ingest 补）
+
+    返回补入后的 StockMeta；北交所等非沪深市场返回 None。
+    """
+    code, _, market = secucode.partition(".")
+    if market not in ("SH", "SZ"):
+        return None
+    try:
+        async with EastMoneyClient() as em:
+            results = await em.search_stocks(code, count=1)
+    except Exception:
+        results = None  # 网络/限流 → 走兜底
+    if results:
+        await upsert_stock_meta(db, results[:1])
+    elif results is None:
+        secid = ("1" if market == "SH" else "0") + "." + code
+        await upsert_stock_meta(db, [StockInfo(secucode, code, code, market, secid)])
+    else:  # results == [] 东财明确查无
+        return None
+    return (
+        await db.execute(select(StockMeta).where(StockMeta.secucode == secucode))
+    ).scalar_one_or_none()
+
+
 @router.post("", response_model=WatchlistItemOut, status_code=201)
 async def add_watchlist(
     body: WatchlistCreateRequest, db: AsyncSession = Depends(get_db)
@@ -59,7 +91,9 @@ async def add_watchlist(
         await db.execute(select(StockMeta).where(StockMeta.secucode == body.secucode))
     ).scalar_one_or_none()
     if not exists:
-        raise HTTPException(status_code=400, detail="secucode not in stock_meta")
+        exists = await _ensure_stock_meta(db, body.secucode)
+        if exists is None:
+            raise HTTPException(status_code=400, detail="stock not found")
 
     max_order = (
         await db.execute(

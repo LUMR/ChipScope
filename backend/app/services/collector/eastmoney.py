@@ -9,6 +9,7 @@ from app.services.collector.types import KlineBar, StockInfo
 
 _LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 _KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+_SUGGEST_URL = "https://searchapi.eastmoney.com/api/suggest/get"
 _HOLDERS_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 # 东财 fs：沪深主板/创业板/科创板（北交所 m:0 t:81 留待后续）
@@ -74,6 +75,31 @@ class EastMoneyClient:
                     secid=_secid_of(f13, code),
                 )
             )
+        return result
+
+    @em_retry
+    async def search_stocks(self, q: str, count: int = 10) -> list[StockInfo]:
+        """东财 suggest 联想搜索：按代码/名称模糊匹配，仅保留沪深 A 股。"""
+        await self._throttle()
+        params = {"input": q, "type": 14, "count": count}
+        resp = await self._client.get(_SUGGEST_URL, params=params)
+        resp.raise_for_status()
+        rows = (resp.json().get("QuotationCodeTable") or {}).get("Data") or []
+        result: list[StockInfo] = []
+        for r in rows:
+            code = str(r.get("Code") or "")
+            mkt = str(r.get("MktNum") or "")
+            # 仅保留沪深 A 股：6 位纯数字代码 + 市场 0(深)/1(沪)
+            if not (code.isdigit() and len(code) == 6 and mkt in ("0", "1")):
+                continue
+            f13 = int(mkt)
+            result.append(StockInfo(
+                secucode=_secucode_of(f13, code),
+                code=code,
+                name=str(r.get("Name") or ""),
+                market=_market_of(f13),
+                secid=_secid_of(f13, code),
+            ))
         return result
 
     async def fetch_daily_kline(self, secid: str, beg: str, end: str) -> list[KlineBar]:

@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.models.stock import StockMeta
+from app.services.collector.eastmoney import EastMoneyClient
+from app.services.collector.types import StockInfo
 
 
 @pytest_asyncio.fixture
@@ -76,9 +78,44 @@ async def test_add_duplicate_ignored(watchlist_client):
 
 
 @pytest.mark.asyncio
-async def test_add_unknown_secucode_400(watchlist_client):
-    r = await watchlist_client.post("/api/watchlist", json={"secucode": "999999.XX"})
+async def test_add_unknown_secucode_400(watchlist_client, monkeypatch):
+    """stock_meta 无时先调东财查证，东财也查无才 400。"""
+    calls = []
+
+    async def fake_search(self, q, count=10):
+        calls.append(q)
+        return []
+
+    monkeypatch.setattr(EastMoneyClient, "search_stocks", fake_search)
+    r = await watchlist_client.post("/api/watchlist", json={"secucode": "999999.SZ"})
     assert r.status_code == 400
+    assert calls == ["999999"]
+
+
+@pytest.mark.asyncio
+async def test_add_auto_fills_meta_from_eastmoney(watchlist_client, monkeypatch):
+    """stock_meta 无 + 东财命中 → 自动补元数据 + 201。"""
+    async def fake_search(self, q, count=10):
+        assert q == "600036"
+        return [StockInfo("600036.SH", "600036", "招商银行", "SH", "1.600036")]
+    monkeypatch.setattr(EastMoneyClient, "search_stocks", fake_search)
+
+    r = await watchlist_client.post("/api/watchlist", json={"secucode": "600036.SH"})
+    assert r.status_code == 201
+
+    data = (await watchlist_client.get("/api/watchlist")).json()
+    assert any(d["secucode"] == "600036.SH" and d["name"] == "招商银行" for d in data)
+
+
+@pytest.mark.asyncio
+async def test_add_falls_back_on_eastmoney_error(watchlist_client, monkeypatch):
+    """东财网络失败 → 用 secucode 解析兜底补最小元数据 + 201（name 缺失）。"""
+    async def fake_search(self, q, count=10):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(EastMoneyClient, "search_stocks", fake_search)
+
+    r = await watchlist_client.post("/api/watchlist", json={"secucode": "600036.SH"})
+    assert r.status_code == 201
 
 
 @pytest.mark.asyncio

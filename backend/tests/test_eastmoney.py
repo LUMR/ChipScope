@@ -77,3 +77,50 @@ async def test_fetch_daily_kline_handles_missing_data(respx_mock):
     async with EastMoneyClient() as em:
         bars = await em.fetch_daily_kline("1.600519", "20260101", "20261231")
     assert bars == []
+
+
+@pytest.mark.asyncio
+async def test_search_stocks_parses_sh_and_sz(respx_mock):
+    respx_mock.get("https://searchapi.eastmoney.com/api/suggest/get").mock(
+        return_value=httpx.Response(
+            200,
+            json={"QuotationCodeTable": {"Data": [
+                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1"},
+                {"Code": "000001", "Name": "平安银行", "MktNum": "0"},
+            ]}},
+        )
+    )
+    async with EastMoneyClient() as em:
+        stocks = await em.search_stocks("600")
+    assert [s.secucode for s in stocks] == ["600519.SH", "000001.SZ"]
+    assert stocks[0].secid == "1.600519"
+    assert stocks[1].secid == "0.000001"
+    assert stocks[0].name == "贵州茅台"
+
+
+@pytest.mark.asyncio
+async def test_search_stocks_filters_non_a_share(respx_mock):
+    respx_mock.get("https://searchapi.eastmoney.com/api/suggest/get").mock(
+        return_value=httpx.Response(
+            200,
+            json={"QuotationCodeTable": {"Data": [
+                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1"},
+                {"Code": "00700", "Name": "腾讯控股", "MktNum": "116"},  # 港股：5 位代码
+                {"Code": "1A0001", "Name": "上证指数", "MktNum": "1"},  # 指数：非纯数字
+                {"Code": "600600", "Name": "某境外", "MktNum": "116"},  # 6 位但市场非 A 股
+            ]}},
+        )
+    )
+    async with EastMoneyClient() as em:
+        stocks = await em.search_stocks("600")
+    assert [s.secucode for s in stocks] == ["600519.SH"]
+
+
+@pytest.mark.asyncio
+async def test_search_stocks_empty_when_no_data(respx_mock):
+    respx_mock.get("https://searchapi.eastmoney.com/api/suggest/get").mock(
+        return_value=httpx.Response(200, json={"QuotationCodeTable": {"Data": None}})
+    )
+    async with EastMoneyClient() as em:
+        stocks = await em.search_stocks("xxx")
+    assert stocks == []
