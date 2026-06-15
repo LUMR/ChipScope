@@ -22,6 +22,9 @@ class Settings(BaseSettings):
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
     )
 
+    # 自选股默认种子（逗号分隔 secucode），watchlist 表为空时首次写入
+    watchlist_default: str = "600519.SH,000001.SZ,000858.SZ,601318.SH,002594.SZ"
+
 
 @lru_cache
 def get_settings() -> Settings:
