@@ -11,6 +11,7 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._subs: dict[str, set[WebSocket]] = {}
+        self._global_subs: set[WebSocket] = set()
 
     async def connect(self, code: str, ws: WebSocket) -> None:
         await ws.accept()
@@ -28,6 +29,24 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.disconnect(code, ws)
+
+    async def connect_global(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self._global_subs.add(ws)
+
+    def disconnect_global(self, ws: WebSocket) -> None:
+        self._global_subs.discard(ws)
+
+    async def broadcast_global(self, data: dict) -> None:
+        """广播给所有全局订阅者（单连接收全部自选股）。"""
+        dead: list[WebSocket] = []
+        for ws in list(self._global_subs):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect_global(ws)
 
 
 manager = ConnectionManager()
