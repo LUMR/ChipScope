@@ -1,43 +1,98 @@
 """定时调度入口：python -m app.scheduler
 
-- 盘中每 3s 拉取自选股实时行情 → Redis 缓存 + WebSocket 广播
+- 盘中每 3s 拉取自选股（DB watchlist 表）实时行情 → Redis 缓存 + WebSocket 广播
 - 每交易日 16:00 采集股东 + 资金流（东财）
-
-环境变量 CHIPSCOPE_WATCHLIST 控制实时监控的股票（逗号分隔代码），默认 600519。
+- watchlist 表为空时，用 CHIPSCOPE_WATCHLIST_DEFAULT 环境变量 seed
 """
 import asyncio
-import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.config import get_settings
 from app.database import SessionLocal
 from app.models.stock import StockMeta
+from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
 from app.services.realtime import cache_quote, manager
 
-WATCHLIST = os.environ.get("CHIPSCOPE_WATCHLIST", "600519").split(",")
+SCOPE = "default"
+
+
+async def read_watchlist_secucodes(
+    session_factory=SessionLocal,
+) -> list[str]:
+    """按 sort_order 读取当前自选股 secucode 列表。
+
+    session_factory 可注入，便于测试隔离（模块级 engine 跨 event loop 复用会失效）。
+    """
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Watchlist.secucode)
+                .where(Watchlist.scope == SCOPE)
+                .order_by(Watchlist.sort_order)
+            )
+        ).scalars().all()
+    return list(rows)
+
+
+async def seed_watchlist_if_empty(session_factory=SessionLocal) -> int:
+    """watchlist 表为空时，用配置的默认种子初始化（仅插入已存在于 stock_meta 的）。返回插入行数。
+
+    session_factory 可注入，便于测试隔离。
+    """
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                select(func.count()).select_from(Watchlist).where(
+                    Watchlist.scope == SCOPE
+                )
+            )
+        ).scalar_one()
+        if count > 0:
+            return 0
+        existing = set(
+            (
+                await session.execute(select(StockMeta.secucode))
+            ).scalars().all()
+        )
+        seeds = [
+            c.strip()
+            for c in get_settings().watchlist_default.split(",")
+            if c.strip() and c.strip() in existing
+        ]
+        for i, secucode in enumerate(seeds):
+            session.add(Watchlist(secucode=secucode, scope=SCOPE, sort_order=i))
+        await session.commit()
+        return len(seeds)
 
 
 async def realtime_loop() -> None:
-    """盘中实时刷新：拉取自选股行情，写 Redis + 广播给 WebSocket 订阅者。"""
+    """盘中实时刷新：每轮从 DB 读自选股，拉行情 → Redis + 全局广播。"""
+    secucodes = await read_watchlist_secucodes()
+    if not secucodes:
+        return
     tdx = TdxClient()
     try:
-        for code in WATCHLIST:
-            code = code.strip()
-            if not code:
-                continue
+        for secucode in secucodes:
+            code = secucode.split(".")[0]
             try:
                 q = await tdx.quotes(code)
                 await cache_quote(q)
-                await manager.broadcast(
-                    code, {"price": q.price, "bids": q.bids, "asks": q.asks}
+                await manager.broadcast_global(
+                    {
+                        "secucode": secucode,
+                        "price": q.price,
+                        "bids": q.bids,
+                        "asks": q.asks,
+                    }
                 )
             except Exception as e:  # 单只失败不影响其他
-                print(f"[realtime] {code} error: {e}")
+                print(f"[realtime] {secucode} error: {e}")
     finally:
         tdx.close()
 
@@ -57,6 +112,7 @@ async def daily_holders_flow() -> None:
 
 
 async def _amain() -> None:
+    await seed_watchlist_if_empty()
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
     sched.add_job(daily_holders_flow, CronTrigger(hour=16, minute=0), id="daily")
