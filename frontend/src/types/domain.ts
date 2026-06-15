@@ -39,3 +39,21 @@ export interface PatternResult {
   trend: PatternForm;
   current_price: number;
 }
+
+export interface WatchlistItem {
+  secucode: string;
+  code: string;
+  name: string;
+  industry: string | null;
+  sort_order: number;
+  created_at: string;
+  price: number | null;
+  pct_change: number | null;
+}
+
+export interface RealtimeQuote {
+  secucode: string;
+  price: number;
+  bids: unknown;
+  asks: unknown;
+}
