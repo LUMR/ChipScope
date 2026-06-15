@@ -108,6 +108,11 @@ export default function WatchlistPage() {
                   render: (_: unknown, r: WatchlistItem) => <PriceCell secucode={r.secucode} />,
                 },
                 {
+                  title: "涨跌",
+                  width: 80,
+                  render: (_: unknown, r: WatchlistItem) => <PctCell secucode={r.secucode} />,
+                },
+                {
                   title: "操作",
                   width: 80,
                   render: (_: unknown, r: WatchlistItem) => (
@@ -142,9 +147,26 @@ function PriceCell({ secucode }: { secucode: string }) {
   if (!quote || quote.price == null) {
     return <Text type="secondary">—</Text>;
   }
+  const pct = quote.pct_change;
+  const color = pct == null ? undefined : pct > 0 ? "#f5222d" : pct < 0 ? "#16a34a" : undefined;
   return (
-    <Text style={{ fontFamily: "ui-monospace, monospace" }}>
+    <Text style={{ fontFamily: "ui-monospace, monospace", color }}>
       {quote.price.toFixed(2)}
+    </Text>
+  );
+}
+
+function PctCell({ secucode }: { secucode: string }) {
+  const quote = useQuote(secucode);
+  const pct = quote?.pct_change;
+  if (pct == null) {
+    return <Text type="secondary">—</Text>;
+  }
+  const color = pct > 0 ? "#f5222d" : pct < 0 ? "#16a34a" : "#374151";
+  return (
+    <Text style={{ fontFamily: "ui-monospace, monospace", color, fontWeight: 600 }}>
+      {pct >= 0 ? "+" : ""}
+      {pct.toFixed(2)}%
     </Text>
   );
 }

@@ -46,7 +46,7 @@ async def list_watchlist(db: AsyncSession = Depends(get_db)):
             sort_order=w.sort_order,
             created_at=w.created_at,
             price=q.get("price") if q else None,
-            pct_change=None,  # quote 缓存暂无 pct_change，留空
+            pct_change=q.get("pct_change") if q else None,
         ))
     return out
 

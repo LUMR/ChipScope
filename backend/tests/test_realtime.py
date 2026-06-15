@@ -1,6 +1,10 @@
-import pytest
+import json
 
-from app.services.realtime import ConnectionManager
+import pytest
+import redis.asyncio as aioredis
+
+from app.config import get_settings
+from app.services.realtime import ConnectionManager, cache_quote
 
 
 class _MockWS:
@@ -54,3 +58,35 @@ async def test_connection_manager_isolation_by_code():
     await mgr.broadcast("600519.SH", {"price": 1.0})
     assert ws_a.sent == [{"price": 1.0}]
     assert ws_b.sent == []  # 不同 code 不收
+
+
+class _FakeQuote:
+    def __init__(self, secucode, price, last_close):
+        self.secucode = secucode
+        self.price = price
+        self.last_close = last_close
+        self.open = price
+        self.high = price
+        self.low = price
+        self.bids = []
+        self.asks = []
+
+
+@pytest.mark.asyncio
+async def test_cache_quote_uses_full_secucode_key_and_pct_change():
+    """cache_quote(secucode=...) 用全格式 secucode 作 key（与 _read_quote 一致）并计算 pct_change。"""
+    r = aioredis.from_url(get_settings().redis_url)
+    await r.delete("quote:600519.SH", "quote:600519")
+    try:
+        q = _FakeQuote("600519", price=1689.0, last_close=1650.0)
+        await cache_quote(q, secucode="600519.SH")
+        raw = await r.get("quote:600519.SH")
+        assert raw is not None  # 全 secucode key 写入
+        payload = json.loads(raw)
+        assert payload["price"] == 1689.0
+        assert payload["last_close"] == 1650.0
+        assert payload["pct_change"] == pytest.approx(2.3636, rel=1e-3)
+        assert await r.get("quote:600519") is None  # 裸 code key 不应存在
+    finally:
+        await r.delete("quote:600519.SH", "quote:600519")
+        await r.aclose()

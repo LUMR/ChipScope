@@ -54,6 +54,8 @@ export interface WatchlistItem {
 export interface RealtimeQuote {
   secucode: string;
   price: number;
+  last_close?: number;
+  pct_change?: number | null;
   bids: unknown;
   asks: unknown;
 }

@@ -52,19 +52,28 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def cache_quote(quote) -> None:
-    """实时行情写 Redis（10s 过期）。"""
+async def cache_quote(quote, secucode: str | None = None) -> None:
+    """实时行情写 Redis（10s 过期）。
+
+    secucode 为全格式（如 600519.SH）；不传则回退到 quote.secucode（裸 code）。
+    传全 secucode 保证 key 与 GET /api/watchlist 的 _read_quote 一致。
+    """
+    key_secucode = secucode or quote.secucode
+    last_close = quote.last_close
+    pct_change = (quote.price - last_close) / last_close * 100 if last_close else None
     r = aioredis.from_url(get_settings().redis_url)
     try:
         payload = {
-            "secucode": quote.secucode,
+            "secucode": key_secucode,
             "price": quote.price,
+            "last_close": last_close,
+            "pct_change": pct_change,
             "open": quote.open,
             "high": quote.high,
             "low": quote.low,
             "bids": quote.bids,
             "asks": quote.asks,
         }
-        await r.set(f"quote:{quote.secucode}", json.dumps(payload), ex=10)
+        await r.set(f"quote:{key_secucode}", json.dumps(payload), ex=10)
     finally:
         await r.aclose()

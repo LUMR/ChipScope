@@ -63,6 +63,9 @@ function WatchRow({
 }) {
   const quote = useQuote(secucode);
   const price = quote?.price;
+  const pct = quote?.pct_change;
+  const pctColor =
+    pct == null ? "#374151" : pct > 0 ? "#f5222d" : pct < 0 ? "#16a34a" : "#374151";
   return (
     <div
       onClick={onClick}
@@ -85,10 +88,22 @@ function WatchRow({
             style={{
               fontSize: 12,
               fontFamily: "ui-monospace, monospace",
-              color: "#374151",
+              color: pctColor,
             }}
           >
             {price.toFixed(2)}
+          </span>
+        )}
+        {pct != null && (
+          <span
+            style={{
+              fontSize: 11,
+              fontFamily: "ui-monospace, monospace",
+              color: pctColor,
+            }}
+          >
+            {pct >= 0 ? "+" : ""}
+            {pct.toFixed(2)}%
           </span>
         )}
         <Popconfirm

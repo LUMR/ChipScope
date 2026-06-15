@@ -94,11 +94,16 @@ async def realtime_loop() -> None:
             code = secucode.split(".")[0]
             try:
                 q = await tdx.quotes(code)
-                await cache_quote(q)
+                await cache_quote(q, secucode)
+                last_close = q.last_close
+                pct_change = (
+                    (q.price - last_close) / last_close * 100 if last_close else None
+                )
                 await manager.broadcast_global(
                     {
                         "secucode": secucode,
                         "price": q.price,
+                        "pct_change": pct_change,
                         "bids": q.bids,
                         "asks": q.asks,
                     }
