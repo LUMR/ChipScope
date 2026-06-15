@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # 自选股默认种子（逗号分隔 secucode），watchlist 表为空时首次写入
     watchlist_default: str = "600519.SH,000001.SZ,000858.SZ,601318.SH,002594.SZ"
 
+    # 是否在 FastAPI 进程内嵌入定时任务（单进程单端口模式）。
+    # 关闭后 uvicorn 仅提供 API，需另起 `python -m app.scheduler` 跑调度。
+    scheduler_enabled: bool = True
+
+    # 前端构建产物目录（npm run build 输出）；空串则自动探测 <项目根>/frontend/dist。
+    frontend_dist: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

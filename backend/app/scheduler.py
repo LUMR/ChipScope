@@ -128,11 +128,21 @@ async def daily_holders_flow() -> None:
                 print(f"[daily] {s.secucode} error: {e}")
 
 
-async def _amain() -> None:
-    await seed_watchlist_if_empty()
+def build_scheduler() -> AsyncIOScheduler:
+    """构造配置好但未启动的调度器。
+
+    供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
+    任务编排一致：实时行情每 3s + 每日 16:00 采集股东/资金流。
+    """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
     sched.add_job(daily_holders_flow, CronTrigger(hour=16, minute=0), id="daily")
+    return sched
+
+
+async def _amain() -> None:
+    await seed_watchlist_if_empty()
+    sched = build_scheduler()
     sched.start()
     print("scheduler started: realtime every 3s, holders/flow at 16:00 (Asia/Shanghai)")
     stop = asyncio.Event()

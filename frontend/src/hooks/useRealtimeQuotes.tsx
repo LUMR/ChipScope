@@ -5,15 +5,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getWatchlist } from "../api/watchlist";
 
 /**
- * 自选股报价。
+ * 自选股报价，走 WebSocket /ws/realtime（全局订阅：单连接收所有自选股推送）。
  *
- * 原设计走 WebSocket，但 scheduler 与 uvicorn 是两个独立进程，
- * ConnectionManager 单例不跨进程，scheduler 的 broadcast 推不到 uvicorn 的
- * WS 客户端。改为轮询 GET /api/watchlist（读 Redis 缓存，scheduler 每 3s 刷新），
- * 准实时且跨进程可靠。
+ * scheduler 已嵌入 uvicorn 同进程，realtime_loop 每 3s 调 broadcast_global，
+ * 直达本连接——无需轮询。断线指数退避重连（1s 起，上限 15s）。
  */
 type QuoteEntry = {
   price: number | null;
@@ -23,31 +20,56 @@ type QuoteMap = Record<string, QuoteEntry>;
 
 const QuoteContext = createContext<QuoteMap>({});
 
-const POLL_MS = 3000;
+function wsUrl() {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws/realtime`;
+}
 
 export function RealtimeProvider({ children }: { children: ReactNode }) {
   const [quotes, setQuotes] = useState<QuoteMap>({});
 
   useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const items = await getWatchlist();
-        if (cancelled) return;
-        const map: QuoteMap = {};
-        for (const it of items) {
-          map[it.secucode] = { price: it.price, pct_change: it.pct_change };
+    let retry = 1000;
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let ws: WebSocket | undefined;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl());
+      ws.onopen = () => {
+        retry = 1000; // 连接成功后重置退避到基线
+      };
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data) as {
+            secucode?: string;
+            price?: number | null;
+            pct_change?: number | null;
+          };
+          const secucode = data.secucode;
+          if (!secucode) return;
+          setQuotes((prev) => ({
+            ...prev,
+            [secucode]: {
+              price: data.price ?? null,
+              pct_change: data.pct_change ?? null,
+            },
+          }));
+        } catch {
+          /* ignore malformed */
         }
-        setQuotes(map);
-      } catch {
-        /* 瞬时错误忽略，下一轮重试 */
-      }
+      };
+      ws.onclose = () => {
+        if (closed) return;
+        timer = setTimeout(connect, retry);
+        retry = Math.min(retry * 2, 15000); // 指数退避，上限 15s
+      };
     };
-    poll();
-    const id = setInterval(poll, POLL_MS);
+    connect();
     return () => {
-      cancelled = true;
-      clearInterval(id);
+      closed = true;
+      clearTimeout(timer);
+      ws?.close();
     };
   }, []);
 

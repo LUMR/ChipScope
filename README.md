@@ -17,7 +17,7 @@
 | 形态识别 | 单峰密集 / 高低位单峰 / 筹码发散 / 上下移 | ✅ |
 | 十大流通股东 | 季度数据，计算衰减系数 A=1/(1−top10%) | ✅ |
 | 资金流向 | 主力 / 超大 / 大 / 中 / 小单净额 | ✅ |
-| 实时行情 | 通达信(mootdx) 五档盘口 → Redis 缓存；前端轮询展示现价/涨跌幅 | ✅ |
+| 实时行情 | 通达信(mootdx) 五档盘口 → Redis 缓存 + WebSocket 推送；前端实时展示现价/涨跌幅 | ✅ |
 | 自选股管理 | 网页配置自选股（搜索添加 / 拖拽排序 / 删除），联动 scheduler 监控 | ✅ |
 | 可视化 | K 线图 + 筹码火焰图 + 指标面板 + 历史回放滑块（B 风格 UI） | ✅ |
 
@@ -37,12 +37,14 @@
 ┌─────────────────────────────────────────────────────┐
 │              前端 React + ECharts                      │
 │      K 线图 · 筹码火焰图 · 指标面板 · 历史回放          │
+│  dev: vite :5173   /   省事: 由 :8001 静态托管          │
 ├─────────────────────────────────────────────────────┤
-│                FastAPI 网关 (:8001)                    │
-│       REST API · WebSocket 实时推送                    │
+│            FastAPI (:8001) —— 单进程                    │
+│   REST API · WebSocket · 内嵌 APScheduler 定时调度      │
+│              （实时行情 3s / 日终 16:00）                │
 ├──────────────┬──────────────┬────────────────────────┤
-│  数据采集引擎  │  筹码计算引擎  │  APScheduler 定时调度   │
-│  东财 httpx   │   NumPy      │  实时 3s / 日终 16:00   │
+│  数据采集引擎  │  筹码计算引擎  │      实时行情缓存        │
+│  东财 httpx   │   NumPy      │   mootdx → Redis        │
 │  通达信 mootdx│              │                        │
 ├──────────────┴──────────────┴────────────────────────┤
 │                 PostgreSQL  ·  Redis                    │
@@ -92,34 +94,38 @@ CHIPSCOPE_REDIS_URL=redis://localhost:6380/0
 .venv/Scripts/alembic upgrade head
 ```
 
-### 4. 启动后端 API
-
-```bash
-.venv/Scripts/uvicorn app.main:app --port 8001 --reload
-# API 文档: http://localhost:8001/docs
-```
-
-> **端口约定：** 后端固定跑在 **8001**，与前端 vite proxy（`vite.config.ts`）对齐。
-
-### 5. 启动定时调度（实时行情 + 日终采集）
-
-```bash
-.venv/Scripts/python -m app.scheduler
-```
-
-- 盘中每 3s 从 `watchlist` 表读取自选股，拉取实时行情 → Redis（前端轮询展示）
-- 首次启动若 `watchlist` 表为空，用 `CHIPSCOPE_WATCHLIST_DEFAULT` 种子初始化（仅插入已存在于 stock_meta 的）
-- 每交易日 16:00（Asia/Shanghai）采集股东 + 资金流
-
-### 6. 启动前端
+### 4. 构建前端（单端口模式需要；纯开发模式可跳过）
 
 ```bash
 cd frontend
 npm install
+npm run build                   # 产物 frontend/dist，供后端 :8001 静态托管
+```
+
+### 5. 一条命令启动（API + 定时任务 + 前端，单进程 :8001）
+
+```bash
+cd backend
+.venv/Scripts/uvicorn app.main:app --port 8001 --reload
+```
+
+- **定时任务已内嵌**：盘中每 3s 读 `watchlist` 表拉实时行情 → Redis；每交易日 16:00（Asia/Shanghai）采集股东 + 资金流。无需另起进程。
+- 首次启动若 `watchlist` 表为空，用 `CHIPSCOPE_WATCHLIST_DEFAULT` 种子初始化（仅插入已存在于 stock_meta 的）。
+- **前端由 :8001 静态托管**：访问 http://localhost:8001 即是完整应用；API 文档 http://localhost:8001/docs。
+- 若不想在 API 进程里跑调度（如生产分离部署），设 `CHIPSCOPE_SCHEDULER_ENABLED=false`，再单独 `.venv/Scripts/python -m app.scheduler`。
+
+> **端口约定：** 后端固定跑在 **8001**。
+
+### 6.（可选）开发模式：前端热更新
+
+频繁改前端、需要 HMR 时，额外开一个终端（后端仍跑第 5 步的 uvicorn）：
+
+```bash
+cd frontend
 npm run dev                     # http://localhost:5173
 ```
 
-vite dev server 会把 `/api`、`/ws` 反向代理到 `http://localhost:8001`。
+vite dev server 会把 `/api`、`/ws` 反向代理到 `http://localhost:8001`，改前端无需重新 build。
 
 ### 7. 灌入示例数据（可选，便于直接看效果）
 
@@ -142,6 +148,8 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 | `CHIPSCOPE_EASTMONEY_MIN_INTERVAL` | `0.5` | 东财两次请求最小间隔（秒），防限流 |
 | `CHIPSCOPE_EASTMONEY_USER_AGENT` | Chrome UA | 东财请求头 |
 | `CHIPSCOPE_WATCHLIST_DEFAULT` | `600519.SH,000001.SZ,000858.SZ,601318.SH,002594.SZ` | watchlist 表为空时首次 seed 的自选股（逗号分隔 secucode，全格式） |
+| `CHIPSCOPE_SCHEDULER_ENABLED` | `true` | 是否在 uvicorn 进程内嵌入定时任务；`false` 时需另起 `python -m app.scheduler` |
+| `CHIPSCOPE_FRONTEND_DIST` | `<项目根>/frontend/dist` | 前端构建产物目录；指向含 index.html 的目录即启用 :8001 静态托管，否则退化为纯 API |
 
 ---
 
@@ -166,7 +174,7 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 
 `secucode` 形如 `600519.SH` / `000001.SZ`。
 
-> **前端实时行情走轮询** `GET /api/watchlist`（3s 间隔）。WebSocket 端点存在，但 scheduler 与 uvicorn 分属不同进程、`ConnectionManager` 不跨进程，故 WS 推送当前未启用（如需真正实时推送，可改 Redis pub/sub 跨进程转发）。
+> **前端实时行情走 WebSocket** `/ws/realtime`（全局订阅）：scheduler 嵌入 uvicorn 同进程，`broadcast_global` 每 3s 直达前端。`GET /api/watchlist` 仍返回带报价的自选股列表，供首屏首渲。
 
 ---
 
@@ -259,7 +267,7 @@ cd frontend && npm run lint && npx vitest run
 ## 已知限制
 
 - **形态识别阈值待校准：** `/pattern` 的"单峰密集"判定基于峰值区占比阈值，在 400-bin 真实分布下灵敏度不足，生产数据上可能漏判，需结合真实行情调参。
-- **前端实时行情：** 通过轮询 `GET /api/watchlist`（3s）展示现价/涨跌幅；WebSocket 推送因 scheduler 与 uvicorn 跨进程未启用（见上 API 说明）。
+- **前端实时行情：** 走 WebSocket `/ws/realtime` 推送（scheduler 嵌入同进程后启用；曾因 scheduler/uvicorn 跨进程临时改轮询，单进程合并后已切回 WS）。连接建立后首条数据需等下一轮广播（≤3s），首屏首渲由 `GET /api/watchlist` 提供初始报价。
 - **自选股单 scope：** watchlist 表预留 `scope` 字段，当前固定 `default`，未实现多用户/分组。
 - **历史回填：** 衰减系数取最近一期季度数据，回填早期历史时存在已知近似。
 - **数据源一致性：** 设计文档以通达信为日 K 主源，当前实现以东方财富为主，文档待同步。

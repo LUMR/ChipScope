@@ -21,10 +21,12 @@ pytest                          # all tests
 pytest tests/test_chip_engine.py -v   # single file
 pytest -k "test_triangle" -v   # single test by name
 
-# Start API server (port 8001 expected by frontend proxy)
+# Start single-process server: API + embedded scheduler + served frontend (port 8001)
+# Build the frontend first: cd ../frontend && npm install && npm run build
 uvicorn app.main:app --reload --port 8001
 
-# Start scheduler (realtime quotes every 3s, daily holders/flow at 16:00 CST)
+# (optional) run scheduler standalone, decoupled from the API process.
+# Set CHIPSCOPE_SCHEDULER_ENABLED=false on the uvicorn side to avoid double-running.
 python -m app.scheduler
 
 # Database migrations
@@ -70,6 +72,11 @@ Frontend (React SPA, Vite dev proxy)
     └── /ws/*   → WebSocket (realtime quotes, per-stock fan-out)
           │
           └── ConnectionManager → Redis cache (10s TTL)
+
+Single-process mode (default): `uvicorn app.main:app` serves the API, the embedded
+APScheduler (started in the FastAPI lifespan), and the built frontend (`frontend/dist`,
+with an SPA fallback) all on :8001. Frontend dev with HMR still uses `npm run dev`
+(:5173) proxying to :8001. Disable embedding with `CHIPSCOPE_SCHEDULER_ENABLED=false`.
 ```
 
 ### Data Flow
@@ -90,6 +97,7 @@ Frontend (React SPA, Vite dev proxy)
 - **EastMoneyClient has built-in throttling** (`eastmoney_min_interval`, default 0.5s) to avoid IP bans.
 - **Tests use real PostgreSQL** (not SQLite). The `conftest.py` fixture `TRUNCATE`s all tables before/after each test. Tests mock HTTP (respx) and TCP (fake DataFrames) but not the database.
 - **Chip distribution stored as JSONB** (`{"15.00": 0.08, ...}`) with GIN index. 400 bins per snapshot.
+- **Single-process by default**: APScheduler is embedded in FastAPI's lifespan (`main.py`), and the built frontend is served as static files with an SPA fallback. `CHIPSCOPE_SCHEDULER_ENABLED=false` + standalone `python -m app.scheduler` preserves the old two-process mode.
 
 ### Module Map
 
@@ -119,6 +127,8 @@ All prefixed with `CHIPSCOPE_`:
 | `CHIPSCOPE_DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/chipscope` | Async PostgreSQL connection string |
 | `CHIPSCOPE_REDIS_URL` | `redis://localhost:6379/0` | Redis connection string |
 | `CHIPSCOPE_EASTMONEY_MIN_INTERVAL` | `0.5` | Throttle between EastMoney HTTP calls (seconds) |
+| `CHIPSCOPE_SCHEDULER_ENABLED` | `true` | Embed APScheduler in the uvicorn process (lifespan); `false` requires running `python -m app.scheduler` separately |
+| `CHIPSCOPE_FRONTEND_DIST` | `<root>/frontend/dist` | Frontend build output dir; enables static SPA hosting on :8001 when index.html exists |
 | `CHIPSCOPE_WATCHLIST` | `600519` | Comma-separated stock codes for realtime monitoring |
 
 ## Conventions
@@ -128,3 +138,4 @@ All prefixed with `CHIPSCOPE_`:
 - Chip engine functions are pure NumPy — no side effects, no I/O, no database access. Keep them that way.
 - Frontend API calls go through `api/client.ts:apiGet<T>()` which prepends `/api` and handles errors.
 - The `secucode` format is `{code}.{market}` (e.g., `600519.SH`, `000001.SZ`). The `secid` format is `{market_int}.{code}` (e.g., `1.600519`).
+- Git commits: no Co-authored-by or Claude signatures in commit messages.

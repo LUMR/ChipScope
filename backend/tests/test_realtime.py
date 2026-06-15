@@ -90,3 +90,30 @@ async def test_cache_quote_uses_full_secucode_key_and_pct_change():
     finally:
         await r.delete("quote:600519.SH", "quote:600519")
         await r.aclose()
+
+
+@pytest.mark.asyncio
+async def test_connection_manager_broadcast_global_fanout():
+    """全局订阅：单连接收所有自选股广播（/ws/realtime 走这条路径）。"""
+    mgr = ConnectionManager()
+    ws1, ws2 = _MockWS(), _MockWS()
+    await mgr.connect_global(ws1)
+    await mgr.connect_global(ws2)
+    await mgr.broadcast_global({"secucode": "600519.SH", "price": 1689.0})
+    assert ws1.accepted and ws2.accepted
+    assert ws1.sent == [{"secucode": "600519.SH", "price": 1689.0}]
+    assert ws2.sent == [{"secucode": "600519.SH", "price": 1689.0}]
+
+
+@pytest.mark.asyncio
+async def test_connection_manager_disconnects_global_dead():
+    """全局广播时清理死连接，正常连接仍收到。"""
+    mgr = ConnectionManager()
+    ws_ok = _MockWS()
+    ws_dead = _MockWS(fail=True)
+    await mgr.connect_global(ws_ok)
+    await mgr.connect_global(ws_dead)
+    await mgr.broadcast_global({"secucode": "600519.SH", "price": 1.0})
+    assert ws_dead not in mgr._global_subs
+    assert ws_ok in mgr._global_subs
+    assert ws_ok.sent == [{"secucode": "600519.SH", "price": 1.0}]
