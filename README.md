@@ -17,8 +17,9 @@
 | 形态识别 | 单峰密集 / 高低位单峰 / 筹码发散 / 上下移 | ✅ |
 | 十大流通股东 | 季度数据，计算衰减系数 A=1/(1−top10%) | ✅ |
 | 资金流向 | 主力 / 超大 / 大 / 中 / 小单净额 | ✅ |
-| 实时行情 | 通达信(mootdx) 五档盘口 → Redis 缓存 + WebSocket 广播 | ✅ 后端 / ⚠️ 前端未接入 |
-| 可视化 | K 线图 + 筹码火焰图 + 指标面板 + 历史回放滑块 | ✅ |
+| 实时行情 | 通达信(mootdx) 五档盘口 → Redis 缓存；前端轮询展示现价/涨跌幅 | ✅ |
+| 自选股管理 | 网页配置自选股（搜索添加 / 拖拽排序 / 删除），联动 scheduler 监控 | ✅ |
+| 可视化 | K 线图 + 筹码火焰图 + 指标面板 + 历史回放滑块（B 风格 UI） | ✅ |
 
 ---
 
@@ -26,7 +27,7 @@
 
 **后端：** FastAPI · SQLAlchemy 2.0 (asyncpg) · Alembic · APScheduler · httpx · tenacity · redis · NumPy · mootdx
 **存储：** PostgreSQL 15 · Redis 7
-**前端：** React 19 · TypeScript · Vite · ECharts（echarts-for-react）· Ant Design · react-router
+**前端：** React 19 · TypeScript · Vite · ECharts（echarts-for-react）· Ant Design · react-router · dnd-kit
 
 ---
 
@@ -106,7 +107,8 @@ CHIPSCOPE_REDIS_URL=redis://localhost:6380/0
 .venv/Scripts/python -m app.scheduler
 ```
 
-- 盘中每 3s 拉取自选股实时行情 → Redis + WebSocket
+- 盘中每 3s 从 `watchlist` 表读取自选股，拉取实时行情 → Redis（前端轮询展示）
+- 首次启动若 `watchlist` 表为空，用 `CHIPSCOPE_WATCHLIST_DEFAULT` 种子初始化（仅插入已存在于 stock_meta 的）
 - 每交易日 16:00（Asia/Shanghai）采集股东 + 资金流
 
 ### 6. 启动前端
@@ -139,7 +141,7 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 | `CHIPSCOPE_REDIS_URL` | `redis://localhost:6379/0` | Redis 连接串 |
 | `CHIPSCOPE_EASTMONEY_MIN_INTERVAL` | `0.5` | 东财两次请求最小间隔（秒），防限流 |
 | `CHIPSCOPE_EASTMONEY_USER_AGENT` | Chrome UA | 东财请求头 |
-| `CHIPSCOPE_WATCHLIST` | `600519` | scheduler 实时监控的股票代码，逗号分隔 |
+| `CHIPSCOPE_WATCHLIST_DEFAULT` | `600519.SH,000001.SZ,000858.SZ,601318.SH,002594.SZ` | watchlist 表为空时首次 seed 的自选股（逗号分隔 secucode，全格式） |
 
 ---
 
@@ -155,9 +157,16 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 | GET | `/api/stocks/{secucode}/holders` | 十大流通股东 |
 | GET | `/api/stocks/{secucode}/flow` | 资金流向 |
 | GET | `/api/stocks/{secucode}/pattern` | 筹码形态识别结果 |
-| WS  | `/ws/realtime/{code}` | 实时行情订阅（code 为裸代码如 `600519`） |
+| GET | `/api/watchlist` | 自选股列表（含名称/行业/实时现价/涨跌幅） |
+| POST | `/api/watchlist` | 添加自选（body `{secucode}`，幂等） |
+| DELETE | `/api/watchlist/{secucode}` | 移出自选 |
+| PUT | `/api/watchlist/reorder` | 拖拽排序（body `{secucodes:[...]}`） |
+| WS  | `/ws/realtime/{code}` | 单股实时行情订阅（code 为裸代码） |
+| WS  | `/ws/realtime` | 全局实时行情订阅（所有自选股） |
 
 `secucode` 形如 `600519.SH` / `000001.SZ`。
+
+> **前端实时行情走轮询** `GET /api/watchlist`（3s 间隔）。WebSocket 端点存在，但 scheduler 与 uvicorn 分属不同进程、`ConnectionManager` 不跨进程，故 WS 推送当前未启用（如需真正实时推送，可改 Redis pub/sub 跨进程转发）。
 
 ---
 
@@ -193,9 +202,9 @@ chipscope/
 │   │   │   ├── ingest.py / realtime.py
 │   │   │   └── ...
 │   │   └── utils/
-│   ├── alembic/versions/   # 0001 init · 0002 holders+flow · 0003 chip_distribution
+│   ├── alembic/versions/   # 0001 init · 0002 holders+flow · 0003 chip_distribution · 0004 watchlist
 │   ├── scripts/            # seed_demo / smoke_ingest / smoke_chip
-│   └── tests/              # 46 测试，纯算法 + API + 采集器
+│   └── tests/              # 55 测试，纯算法 + API + 采集器 + watchlist
 ├── frontend/
 │   └── src/                # pages / components / api / hooks / types
 ├── docker-compose.yml      # db(PostgreSQL 15) + redis
@@ -208,7 +217,7 @@ chipscope/
 
 ```bash
 # 后端测试（需 docker 里的 PG 在线，测试直连真实库做 TRUNCATE 隔离）
-cd backend && .venv/Scripts/python -m pytest            # 46 passed
+cd backend && .venv/Scripts/python -m pytest            # 55 passed
 
 # 合成数据冒烟：验证筹码引擎端到端（不依赖外部数据源）
 PYTHONPATH=. .venv/Scripts/python scripts/smoke_chip.py
@@ -240,7 +249,8 @@ cd frontend && npm run lint && npx vitest run
 
 - **P0–P3（已完成）**：基础设施 / 数据采集 / 筹码引擎 / REST API + WebSocket
 - **P4（已完成）**：前端 K 线 + 火焰图 + 指标面板 + 历史回放
-- **P5（待办）**：Docker 全栈部署、监控告警、文档完善
+- **自选股配置页 + UI 重设计（已完成）**：watchlist 表 + CRUD API + 全局 WS；前端 AppLayout（顶部导航 + 常驻自选栏）、自选管理页（dnd-kit 拖拽排序）、B 风格主题、轮询实时报价（现价 + 涨跌幅）。设计见 `docs/superpowers/specs/`，计划见 `docs/superpowers/plans/`
+- **P5（待办）**：Docker 全栈部署、监控告警、真实采集验证、股东/资金流前端可视化
 
 实现计划文档位于 [`docs/superpowers/plans/`](./docs/superpowers/plans/)。
 
@@ -249,6 +259,7 @@ cd frontend && npm run lint && npx vitest run
 ## 已知限制
 
 - **形态识别阈值待校准：** `/pattern` 的"单峰密集"判定基于峰值区占比阈值，在 400-bin 真实分布下灵敏度不足，生产数据上可能漏判，需结合真实行情调参。
-- **前端实时行情：** 后端 WebSocket 已就绪，前端尚未接入实时价格，当前为静态快照。
+- **前端实时行情：** 通过轮询 `GET /api/watchlist`（3s）展示现价/涨跌幅；WebSocket 推送因 scheduler 与 uvicorn 跨进程未启用（见上 API 说明）。
+- **自选股单 scope：** watchlist 表预留 `scope` 字段，当前固定 `default`，未实现多用户/分组。
 - **历史回填：** 衰减系数取最近一期季度数据，回填早期历史时存在已知近似。
 - **数据源一致性：** 设计文档以通达信为日 K 主源，当前实现以东方财富为主，文档待同步。
