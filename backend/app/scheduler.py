@@ -60,6 +60,18 @@ async def seed_watchlist_if_empty(session_factory=SessionLocal) -> int:
                 await session.execute(select(StockMeta.secucode))
             ).scalars().all()
         )
+        if not existing:
+            pending = [
+                c.strip()
+                for c in get_settings().watchlist_default.split(",")
+                if c.strip()
+            ]
+            print(
+                f"[seed] stock_meta 为空，跳过 watchlist 初始化"
+                f"（{len(pending)} 个代码待入库）；"
+                "请先跑 smoke_ingest/seed_demo 填充 stock_meta，再重启 scheduler"
+            )
+            return 0
         seeds = [
             c.strip()
             for c in get_settings().watchlist_default.split(",")
