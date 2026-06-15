@@ -5,52 +5,49 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { RealtimeQuote } from "../types/domain";
+import { getWatchlist } from "../api/watchlist";
 
-type QuoteMap = Record<string, RealtimeQuote>;
+/**
+ * 自选股报价。
+ *
+ * 原设计走 WebSocket，但 scheduler 与 uvicorn 是两个独立进程，
+ * ConnectionManager 单例不跨进程，scheduler 的 broadcast 推不到 uvicorn 的
+ * WS 客户端。改为轮询 GET /api/watchlist（读 Redis 缓存，scheduler 每 3s 刷新），
+ * 准实时且跨进程可靠。
+ */
+type QuoteEntry = {
+  price: number | null;
+  pct_change: number | null;
+};
+type QuoteMap = Record<string, QuoteEntry>;
 
 const QuoteContext = createContext<QuoteMap>({});
 
-function wsUrl() {
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${window.location.host}/ws/realtime`;
-}
+const POLL_MS = 3000;
 
 export function RealtimeProvider({ children }: { children: ReactNode }) {
   const [quotes, setQuotes] = useState<QuoteMap>({});
 
   useEffect(() => {
-    let retry = 1000;
-    let closed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let ws: WebSocket;
-
-    const connect = () => {
-      ws = new WebSocket(wsUrl());
-      ws.onopen = () => {
-        retry = 1000; // 连接成功后重置退避到基线
-      };
-      ws.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data) as RealtimeQuote;
-          if (data.secucode) {
-            setQuotes((prev) => ({ ...prev, [data.secucode]: data }));
-          }
-        } catch {
-          /* ignore malformed */
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const items = await getWatchlist();
+        if (cancelled) return;
+        const map: QuoteMap = {};
+        for (const it of items) {
+          map[it.secucode] = { price: it.price, pct_change: it.pct_change };
         }
-      };
-      ws.onclose = () => {
-        if (closed) return;
-        timer = setTimeout(connect, retry);
-        retry = Math.min(retry * 2, 15000); // 指数退避，上限 15s
-      };
+        setQuotes(map);
+      } catch {
+        /* 瞬时错误忽略，下一轮重试 */
+      }
     };
-    connect();
+    poll();
+    const id = setInterval(poll, POLL_MS);
     return () => {
-      closed = true;
-      clearTimeout(timer);
-      ws?.close();
+      cancelled = true;
+      clearInterval(id);
     };
   }, []);
 
@@ -59,7 +56,7 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useQuote(secucode: string): RealtimeQuote | undefined {
+export function useQuote(secucode: string): QuoteEntry | undefined {
   return useContext(QuoteContext)[secucode];
 }
 

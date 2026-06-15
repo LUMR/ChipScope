@@ -1,48 +1,55 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { RealtimeProvider, useQuote, useAllQuotes } from "./useRealtimeQuotes";
 import type { ReactNode } from "react";
+import type { WatchlistItem } from "../types/domain";
 
-class MockWS {
-  static instances: MockWS[] = [];
-  url: string;
-  onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  readyState = 1;
-  constructor(url: string) {
-    this.url = url;
-    MockWS.instances.push(this);
-  }
-  send() {}
-  close() { this.readyState = 3; }
-  emit(data: object) {
-    this.onmessage?.({ data: JSON.stringify(data) });
-  }
-}
+vi.mock("../api/watchlist", () => ({
+  getWatchlist: vi.fn(),
+  addWatchlist: vi.fn(),
+  removeWatchlist: vi.fn(),
+  reorderWatchlist: vi.fn(),
+}));
 
-beforeEach(() => {
-  MockWS.instances = [];
-  (globalThis as unknown as { WebSocket: typeof MockWS }).WebSocket = MockWS;
+import { getWatchlist } from "../api/watchlist";
+
+const item = (
+  secucode: string,
+  price: number | null,
+  pct: number | null
+): WatchlistItem => ({
+  secucode,
+  code: secucode.split(".")[0],
+  name: secucode,
+  industry: null,
+  sort_order: 0,
+  created_at: "2026-06-15T00:00:00Z",
+  price,
+  pct_change: pct,
 });
-afterEach(() => vi.clearAllMocks());
 
-const wrapper = ({ children }: { children: ReactNode }) =>
-  <RealtimeProvider>{children}</RealtimeProvider>;
+beforeEach(() => vi.clearAllMocks());
+
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <RealtimeProvider>{children}</RealtimeProvider>
+);
 
 describe("useRealtimeQuotes", () => {
-  it("connects to /ws/realtime and routes quotes by secucode", async () => {
-    // useQuote 与 useAllQuotes 必须在同一 Provider 实例下，否则 context 各自独立
+  it("polls /api/watchlist and maps price/pct_change by secucode", async () => {
+    vi.mocked(getWatchlist).mockResolvedValue([
+      item("600519.SH", 1689.5, 2.3),
+      item("000001.SZ", 11.2, -0.5),
+    ]);
+
     const { result } = renderHook(
       () => ({ q: useQuote("600519.SH"), all: useAllQuotes() }),
       { wrapper }
     );
-    await waitFor(() => expect(MockWS.instances).toHaveLength(1));
-    expect(MockWS.instances[0].url).toContain("/ws/realtime");
 
-    MockWS.instances[0].emit({ secucode: "600519.SH", price: 1689.5 });
+    // mount 即触发首次 poll
     await waitFor(() => expect(result.current.q?.price).toBe(1689.5));
-
-    MockWS.instances[0].emit({ secucode: "000001.SZ", price: 11.2 });
-    await waitFor(() => expect(Object.keys(result.current.all)).toHaveLength(2));
+    expect(result.current.q?.pct_change).toBe(2.3);
+    expect(Object.keys(result.current.all)).toHaveLength(2);
+    expect(getWatchlist).toHaveBeenCalled();
   });
 });
