@@ -15,7 +15,7 @@ from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.types import StockInfo
 from app.services.ingest import upsert_stock_meta
-from app.services.kline_chip import ingest_kline_and_chips, resolve_decay_coeff
+from app.services.kline_chip import ingest_kline_and_chips, resolve_decay_coeff, resolve_float_shares
 from app.utils.time import trading_day_ts
 
 _META = [StockInfo("600519.SH", "600519", "贵州茅台", "SH", "1.600519")]
@@ -152,3 +152,34 @@ async def test_add_watchlist_ingest_failure_does_not_rollback(kline_chip_client,
     r = await kline_chip_client.post("/api/watchlist", json={"secucode": "600519.SH"})
     assert r.status_code == 201
     assert await _count_rows(Watchlist, "600519.SH") == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_float_shares_uses_cache(db_session):
+    """stock_meta.float_shares 已缓存 → 直接返回，不请求东财。"""
+    db_session.add(StockMeta(secucode="600036.SH", code="600036", name="招商银行",
+                             market="SH", secid="1.600036", float_shares=2_000_000_000))
+    await db_session.commit()
+    fs = await resolve_float_shares(db_session, em=None, secucode="600036.SH", secid="1.600036")
+    assert fs == 2_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_resolve_float_shares_fetches_and_caches(db_session, respx_mock):
+    """缓存缺失 → 东财取 → 回填 stock_meta.float_shares。"""
+    db_session.add(StockMeta(secucode="600036.SH", code="600036", name="招商银行",
+                             market="SH", secid="1.600036"))  # float_shares=None
+    await db_session.commit()
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": {"f85": 20_628_944_429}})
+    )
+    async with EastMoneyClient() as em:
+        fs = await resolve_float_shares(db_session, em, "600036.SH", "1.600036")
+    assert fs == 20_628_944_429
+    # 回填确认
+    cached = (
+        await db_session.execute(
+            select(StockMeta.float_shares).where(StockMeta.secucode == "600036.SH")
+        )
+    ).scalar_one()
+    assert float(cached) == 20_628_944_429

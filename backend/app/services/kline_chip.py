@@ -6,11 +6,12 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.config import get_settings
 from app.models.holder import HolderSummary
 from app.models.kline import DailyKline
+from app.models.stock import StockMeta
 from app.services.chip_compute import compute_chip_series, upsert_chip_distribution
 from app.services.ingest import ingest_daily_kline
 
@@ -28,6 +29,35 @@ async def resolve_decay_coeff(session, secucode) -> float:
         )
     ).scalar_one_or_none()
     return float(row) if row is not None else get_settings().chip_decay_default
+
+
+async def resolve_float_shares(session, em, secucode, secid) -> float:
+    """流通股本（股）：优先 stock_meta.float_shares 缓存，缺失则东财取并回填。
+
+    em 可为 None（仅查缓存，测试用）；东财失败容错返回 0（换手率退化为 0，仍能出图）。
+    """
+    cached = (
+        await session.execute(
+            select(StockMeta.float_shares).where(StockMeta.secucode == secucode)
+        )
+    ).scalar_one_or_none()
+    if cached and cached > 0:
+        return float(cached)
+    if em is None:
+        return 0.0
+    try:
+        fs = await em.fetch_float_shares(secid)
+        if fs > 0:
+            await session.execute(
+                update(StockMeta)
+                .where(StockMeta.secucode == secucode)
+                .values(float_shares=fs)
+            )
+            await session.commit()
+        return fs
+    except Exception as e:
+        print(f"[float_shares] {secucode} fetch failed: {e}")
+        return 0.0
 
 
 def _cst_today_str() -> str:
