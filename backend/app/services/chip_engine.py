@@ -36,6 +36,13 @@ def decay_step(old_dist, today_tri, turnover_rate: float, decay_coeff: float):
 
     effective_turnover = min(turnover_rate * decay_coeff / 100, 0.95)
     new = today_tri * eff + old_dist * (1 - eff)
+
+    turnover_rate<=0（流通股本缺失，东财限流）时退化为纯累加 new=today_tri+old_dist，
+    保证首根 old=0 也能出图（决策#4）；否则首根全 0 会导致全程为 0 → 筹码图空白。
     """
+    old = np.asarray(old_dist, dtype=float)
+    today = np.asarray(today_tri, dtype=float)
+    if turnover_rate <= 0:
+        return today + old
     eff = min(turnover_rate * decay_coeff / 100.0, 0.95)
-    return today_tri * eff + np.asarray(old_dist) * (1.0 - eff)
+    return today * eff + old * (1.0 - eff)
