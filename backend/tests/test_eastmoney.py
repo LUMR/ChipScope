@@ -124,3 +124,23 @@ async def test_search_stocks_empty_when_no_data(respx_mock):
     async with EastMoneyClient() as em:
         stocks = await em.search_stocks("xxx")
     assert stocks == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_float_shares_parses_f85(respx_mock):
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": {"f85": 20628944429}})
+    )
+    async with EastMoneyClient() as em:
+        fs = await em.fetch_float_shares("1.600036")
+    assert fs == 20628944429
+
+
+@pytest.mark.asyncio
+async def test_fetch_float_shares_zero_when_no_data(respx_mock):
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": None})
+    )
+    async with EastMoneyClient() as em:
+        fs = await em.fetch_float_shares("1.600036")
+    assert fs == 0.0
