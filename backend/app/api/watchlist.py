@@ -14,6 +14,7 @@ from app.schemas.watchlist import ReorderRequest, WatchlistCreateRequest, Watchl
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.types import StockInfo
 from app.services.ingest import upsert_stock_meta
+from app.services.kline_chip import ingest_kline_and_chips
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -109,6 +110,18 @@ async def add_watchlist(
     )
     await db.execute(stmt)
     await db.commit()
+
+    # 同步触发历史日K + 筹码采集（低频人工操作，等待 1–3s 可接受）。
+    # 采集失败不得回滚 watchlist：watchlist 行已 commit，这里仅记日志。
+    try:
+        async with EastMoneyClient() as em:
+            r = await ingest_kline_and_chips(
+                em, db, body.secucode, exists.secid,
+                days=get_settings().kline_history_days,
+            )
+        print(f"[watchlist] {body.secucode} ingested: {r}")
+    except Exception as e:
+        print(f"[watchlist] {body.secucode} kline/chip ingest failed: {e}")
 
     row = (
         await db.execute(

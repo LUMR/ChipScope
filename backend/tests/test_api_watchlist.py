@@ -1,5 +1,7 @@
+import httpx
 import pytest
 import pytest_asyncio
+import respx
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -36,8 +38,13 @@ async def watchlist_client():
     from app.main import app
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+    # add_watchlist 现会同步触发日K采集；mock 返回空，避免真实联网拖慢/触发东财限流。
+    with respx.mock(assert_all_called=False) as rx:
+        rx.get("https://push2his.eastmoney.com/api/qt/stock/kline/get").mock(
+            return_value=httpx.Response(200, json={"data": None})
+        )
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
     app.dependency_overrides.clear()
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE stock_meta, watchlist CASCADE"))

@@ -2,6 +2,7 @@
 
 - 盘中每 3s 拉取自选股（DB watchlist 表）实时行情 → Redis 缓存 + WebSocket 广播
 - 每交易日 16:00 采集股东 + 资金流（东财）
+- 每交易日 16:05 增量拉自选股日K + 重算筹码分布
 - watchlist 表为空时，用 CHIPSCOPE_WATCHLIST_DEFAULT 环境变量 seed
 """
 import asyncio
@@ -17,6 +18,7 @@ from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
+from app.services.kline_chip import ingest_kline_and_chips
 from app.services.realtime import cache_quote, manager
 
 SCOPE = "default"
@@ -128,15 +130,41 @@ async def daily_holders_flow() -> None:
                 print(f"[daily] {s.secucode} error: {e}")
 
 
+async def daily_kline_chip() -> None:
+    """16:05 增量拉 watchlist 自选股日K + 重算筹码。
+
+    盘后任务，错开 16:00 holders/flow 任务 5 分钟，避免抢东财节流。
+    遍历 watchlist（用户关心的子集），单只 try/except 不影响其他。
+    """
+    async with EastMoneyClient() as em, SessionLocal() as session:
+        stmt = (
+            select(Watchlist.secucode, StockMeta.secid)
+            .join(StockMeta, Watchlist.secucode == StockMeta.secucode)
+            .where(Watchlist.scope == SCOPE)
+        )
+        rows = (await session.execute(stmt)).all()
+        for secucode, secid in rows:
+            try:
+                r = await ingest_kline_and_chips(
+                    em, session, secucode, secid,
+                    days=get_settings().kline_history_days,
+                )
+                print(f"[daily_kline_chip] {secucode}: {r}")
+            except Exception as e:
+                print(f"[daily_kline_chip] {secucode} error: {e}")
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
     供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
-    任务编排一致：实时行情每 3s + 每日 16:00 采集股东/资金流。
+    任务编排一致：实时行情每 3s + 每日 16:00 采集股东/资金流 +
+    16:05 增量拉自选股日K/重算筹码。
     """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
     sched.add_job(daily_holders_flow, CronTrigger(hour=16, minute=0), id="daily")
+    sched.add_job(daily_kline_chip, CronTrigger(hour=16, minute=5), id="daily_kline_chip")
     return sched
 
 
@@ -144,7 +172,7 @@ async def _amain() -> None:
     await seed_watchlist_if_empty()
     sched = build_scheduler()
     sched.start()
-    print("scheduler started: realtime every 3s, holders/flow at 16:00 (Asia/Shanghai)")
+    print("scheduler started: realtime every 3s, holders/flow at 16:00, kline/chip at 16:05 (Asia/Shanghai)")
     stop = asyncio.Event()
     try:
         await stop.wait()  # 永远等待，保持 loop 运行
