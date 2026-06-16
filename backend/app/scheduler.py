@@ -131,27 +131,31 @@ async def daily_holders_flow() -> None:
 
 
 async def daily_kline_chip() -> None:
-    """16:05 增量拉 watchlist 自选股日K + 重算筹码。
+    """16:05 增量拉 watchlist 自选股日K + 重算筹码（mootdx TCP，绕过东财反爬）。
 
-    盘后任务，错开 16:00 holders/flow 任务 5 分钟，避免抢东财节流。
-    遍历 watchlist（用户关心的子集），单只 try/except 不影响其他。
+    盘后任务，错开 16:00 holders/flow 任务 5 分钟。遍历 watchlist（用户关心的子集），
+    单只 try/except 不影响其他。TdxClient 全任务复用一个连接。
     """
-    async with EastMoneyClient() as em, SessionLocal() as session:
-        stmt = (
-            select(Watchlist.secucode, StockMeta.secid)
-            .join(StockMeta, Watchlist.secucode == StockMeta.secucode)
-            .where(Watchlist.scope == SCOPE)
-        )
-        rows = (await session.execute(stmt)).all()
-        for secucode, secid in rows:
-            try:
-                r = await ingest_kline_and_chips(
-                    em, session, secucode, secid,
-                    days=get_settings().kline_history_days,
-                )
-                print(f"[daily_kline_chip] {secucode}: {r}")
-            except Exception as e:
-                print(f"[daily_kline_chip] {secucode} error: {e}")
+    tdx = TdxClient()
+    try:
+        async with EastMoneyClient() as em, SessionLocal() as session:
+            stmt = (
+                select(Watchlist.secucode, StockMeta.secid)
+                .join(StockMeta, Watchlist.secucode == StockMeta.secucode)
+                .where(Watchlist.scope == SCOPE)
+            )
+            rows = (await session.execute(stmt)).all()
+            for secucode, secid in rows:
+                try:
+                    r = await ingest_kline_and_chips(
+                        tdx, em, session, secucode, secid,
+                        days=get_settings().kline_history_days,
+                    )
+                    print(f"[daily_kline_chip] {secucode}: {r}")
+                except Exception as e:
+                    print(f"[daily_kline_chip] {secucode} error: {e}")
+    finally:
+        tdx.close()
 
 
 def build_scheduler() -> AsyncIOScheduler:
