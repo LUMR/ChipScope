@@ -3,9 +3,6 @@
 供 watchlist.add_watchlist（同步触发）与 scheduler.daily_kline_chip（每日增量）
 复用：增量拉日K → 全量重算筹码序列 → 落库。
 """
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-
 from sqlalchemy import select, update
 
 from app.config import get_settings
@@ -13,9 +10,7 @@ from app.models.holder import HolderSummary
 from app.models.kline import DailyKline
 from app.models.stock import StockMeta
 from app.services.chip_compute import compute_chip_series, upsert_chip_distribution
-from app.services.ingest import ingest_daily_kline
-
-_CST = ZoneInfo("Asia/Shanghai")
+from app.services.ingest import upsert_daily_kline
 
 
 async def resolve_decay_coeff(session, secucode) -> float:
@@ -60,11 +55,6 @@ async def resolve_float_shares(session, em, secucode, secid) -> float:
         return 0.0
 
 
-def _cst_today_str() -> str:
-    """当前北京日期 → '%Y%m%d'（东财 beg/end 入参格式）。"""
-    return datetime.now(_CST).date().strftime("%Y%m%d")
-
-
 async def _load_klines_as_dicts(session, secucode) -> list[dict]:
     """读 daily_kline 全序列（按 ts 升序），转 compute_chip_series 所需 dict；Numeric 列显式 float()。"""
     rows = (
@@ -88,30 +78,19 @@ async def _load_klines_as_dicts(session, secucode) -> list[dict]:
     ]
 
 
-async def _compute_beg(session, secucode, default_days: int) -> str:
-    """增量起始日：有历史则取 max(ts) 次日，无则 today - default_days。"""
-    last = (
-        await session.execute(
-            select(DailyKline.ts)
-            .where(DailyKline.secucode == secucode)
-            .order_by(DailyKline.ts.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if last is not None:
-        return (last.astimezone(_CST).date() + timedelta(days=1)).strftime("%Y%m%d")
-    return (datetime.now(_CST).date() - timedelta(days=default_days)).strftime("%Y%m%d")
+async def ingest_kline_and_chips(tdx, em, session, secucode, secid, *, days: int | None = None) -> dict:
+    """mootdx 日K → 全量重算筹码序列 → 落库。
 
-
-async def ingest_kline_and_chips(em, session, secucode, secid, *, days: int | None = None) -> dict:
-    """增量拉日K → 全量重算筹码序列 → 落库。
-
+    K线走 tdx（mootdx TCP，绕过东财反爬）；流通股本走 resolve_float_shares（缓存 + 东财）。
     返回 {"klines": n, "chips": n}；日K为空（新股/停牌）时返回 {0, 0} 且不抛异常。
-    筹码每次按完整序列重算（compute_chip_series 逐日衰减依赖全段），bin 区间随数据
-    变化会覆盖该 secucode 所有历史 chip_distribution 行（幂等 upsert，属算法正确行为）。
+    筹码每次按完整序列重算，bin 区间随数据变化会覆盖该 secucode 所有历史 chip_distribution 行
+    （幂等 upsert，属算法正确行为）。
     """
-    beg = await _compute_beg(session, secucode, days or get_settings().kline_history_days)
-    await ingest_daily_kline(em, session, secucode, secid, beg, _cst_today_str())
+    count = days or get_settings().kline_history_days
+    code = secucode.split(".")[0]
+    float_shares = await resolve_float_shares(session, em, secucode, secid)
+    bars = await tdx.daily_bars(code, count, float_shares)
+    await upsert_daily_kline(session, secucode, bars)
 
     klines = await _load_klines_as_dicts(session, secucode)
     if not klines:

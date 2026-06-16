@@ -12,6 +12,7 @@ from app.models.stock import StockMeta
 from app.models.watchlist import Watchlist
 from app.schemas.watchlist import ReorderRequest, WatchlistCreateRequest, WatchlistItemOut
 from app.services.collector.eastmoney import EastMoneyClient
+from app.services.collector.tdx_client import TdxClient
 from app.services.collector.types import StockInfo
 from app.services.ingest import upsert_stock_meta
 from app.services.kline_chip import ingest_kline_and_chips
@@ -111,17 +112,20 @@ async def add_watchlist(
     await db.execute(stmt)
     await db.commit()
 
-    # 同步触发历史日K + 筹码采集（低频人工操作，等待 1–3s 可接受）。
+    # 同步触发历史日K + 筹码采集（K线走 mootdx TCP，绕过东财反爬）。
     # 采集失败不得回滚 watchlist：watchlist 行已 commit，这里仅记日志。
+    tdx = TdxClient()
     try:
         async with EastMoneyClient() as em:
             r = await ingest_kline_and_chips(
-                em, db, body.secucode, exists.secid,
+                tdx, em, db, body.secucode, exists.secid,
                 days=get_settings().kline_history_days,
             )
         print(f"[watchlist] {body.secucode} ingested: {r}")
     except Exception as e:
         print(f"[watchlist] {body.secucode} kline/chip ingest failed: {e}")
+    finally:
+        tdx.close()
 
     row = (
         await db.execute(

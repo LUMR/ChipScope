@@ -3,7 +3,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
@@ -13,7 +13,7 @@ from app.models.kline import DailyKline
 from app.models.stock import StockMeta
 from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
-from app.services.collector.types import StockInfo
+from app.services.collector.types import KlineBar, StockInfo
 from app.services.ingest import upsert_stock_meta
 from app.services.kline_chip import ingest_kline_and_chips, resolve_decay_coeff, resolve_float_shares
 from app.utils.time import trading_day_ts
@@ -25,6 +25,26 @@ _SAMPLES = [
     "2026-06-12,1685.00,1690.00,1695.00,1680.00,12000,2028000000,0.89,0.30,5.0,0.9",
     "2026-06-13,1690.00,1688.00,1698.00,1685.00,8000,1350400000,0.89,-0.12,2.0,0.6",
 ]
+
+
+# 3 根日K（与 _SAMPLES 等价，但直接构造 KlineBar；vwap 落在 [low,high] 内）
+_BARS = [
+    KlineBar("2026-06-11", 1680.0, 1685.0, 1690.0, 1675.0, 10000, 1.683e9, 0.30, 0.8, 1683.0),
+    KlineBar("2026-06-12", 1685.0, 1690.0, 1695.0, 1680.0, 12000, 2.028e9, 0.30, 0.9, 1690.0),
+    KlineBar("2026-06-13", 1690.0, 1688.0, 1698.0, 1685.0, 8000, 1.3504e9, -0.12, 0.6, 1688.0),
+]
+
+
+class _FakeTdx:
+    """注入式 fake：绕过 mootdx TCP，直接返回预设 bars。"""
+    def __init__(self, bars):
+        self._bars = bars
+
+    async def daily_bars(self, symbol, count, float_shares=0.0):
+        return self._bars
+
+    def close(self):
+        pass
 
 
 @pytest.mark.asyncio
@@ -50,24 +70,32 @@ async def test_resolve_decay_uses_holder_when_available(db_session):
 
 
 @pytest.mark.asyncio
-async def test_ingest_empty_kline_skips_chips(db_session, respx_mock):
-    """东财返回空（新股/停牌）→ 返回 {klines:0, chips:0}，不抛异常。"""
-    respx_mock.get(_KLINE_URL).mock(return_value=httpx.Response(200, json={"data": None}))
+async def test_ingest_empty_kline_skips_chips(db_session):
+    """tdx 返回空（新股/停牌）→ 返回 {klines:0, chips:0}，不抛异常。"""
     await upsert_stock_meta(db_session, _META)
+    await db_session.execute(
+        update(StockMeta).where(StockMeta.secucode == "600519.SH").values(float_shares=1e10)
+    )
+    await db_session.commit()
     async with EastMoneyClient() as em:
-        r = await ingest_kline_and_chips(em, db_session, "600519.SH", "1.600519", days=30)
+        r = await ingest_kline_and_chips(
+            _FakeTdx([]), em, db_session, "600519.SH", "1.600519", days=30
+        )
     assert r == {"klines": 0, "chips": 0}
 
 
 @pytest.mark.asyncio
-async def test_ingest_kline_and_chips_end_to_end(db_session, respx_mock):
-    """mock 3 根日K → daily_kline、chip_distribution 各 3 行，返回 {klines:3, chips:3}。"""
-    respx_mock.get(_KLINE_URL).mock(
-        return_value=httpx.Response(200, json={"data": {"klines": _SAMPLES}})
-    )
+async def test_ingest_kline_and_chips_end_to_end(db_session):
+    """tdx 返回 3 根日K → daily_kline、chip_distribution 各 3 行，返回 {klines:3, chips:3}。"""
     await upsert_stock_meta(db_session, _META)
+    await db_session.execute(
+        update(StockMeta).where(StockMeta.secucode == "600519.SH").values(float_shares=1e10)
+    )
+    await db_session.commit()
     async with EastMoneyClient() as em:
-        r = await ingest_kline_and_chips(em, db_session, "600519.SH", "1.600519", days=30)
+        r = await ingest_kline_and_chips(
+            _FakeTdx(list(_BARS)), em, db_session, "600519.SH", "1.600519", days=30
+        )
     assert r == {"klines": 3, "chips": 3}
     klines = (
         await db_session.execute(
@@ -134,11 +162,23 @@ async def _count_rows(model, secucode: str) -> int:
 
 
 @pytest.mark.asyncio
-async def test_add_watchlist_triggers_ingest(kline_chip_client, respx_mock):
-    """POST /api/watchlist → 触发采集，daily_kline/chip_distribution 各落 3 行。"""
-    respx_mock.get(_KLINE_URL).mock(
-        return_value=httpx.Response(200, json={"data": {"klines": _SAMPLES}})
+async def test_add_watchlist_triggers_ingest(kline_chip_client, respx_mock, monkeypatch):
+    """POST /api/watchlist → 触发 mootdx 采集，daily_kline/chip_distribution 落库。"""
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": {"f85": 10_000_000_000}})
     )
+
+    class _FakeTdx:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def daily_bars(self, symbol, count, float_shares=0.0):
+            return list(_BARS)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.api.watchlist.TdxClient", _FakeTdx)
     r = await kline_chip_client.post("/api/watchlist", json={"secucode": "600519.SH"})
     assert r.status_code == 201
     assert await _count_rows(DailyKline, "600519.SH") == 3
@@ -146,9 +186,23 @@ async def test_add_watchlist_triggers_ingest(kline_chip_client, respx_mock):
 
 
 @pytest.mark.asyncio
-async def test_add_watchlist_ingest_failure_does_not_rollback(kline_chip_client, respx_mock):
-    """采集抛异常（限流/网络）→ POST 仍 201，watchlist 行已落库（容错边界）。"""
-    respx_mock.get(_KLINE_URL).mock(side_effect=httpx.ConnectError("rate limited"))
+async def test_add_watchlist_ingest_failure_does_not_rollback(kline_chip_client, respx_mock, monkeypatch):
+    """采集抛异常 → POST 仍 201，watchlist 行已落库（容错边界）。"""
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": {"f85": 10_000_000_000}})
+    )
+
+    class _BoomTdx:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def daily_bars(self, *a, **kw):
+            raise RuntimeError("mootdx down")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.api.watchlist.TdxClient", _BoomTdx)
     r = await kline_chip_client.post("/api/watchlist", json={"secucode": "600519.SH"})
     assert r.status_code == 201
     assert await _count_rows(Watchlist, "600519.SH") == 1
