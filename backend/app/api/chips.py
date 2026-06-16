@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -21,7 +21,9 @@ async def get_chips(
 ):
     stmt = select(ChipDistribution).where(ChipDistribution.secucode == secucode)
     if date:
-        stmt = stmt.where(ChipDistribution.ts <= date)
+        # date 解析为传入日 00:00(UTC)，而 chip ts 落在当日 07:30(北京 15:30 收盘)，
+        # 用 < 次日 以包含当日，避免前端按日取筹码时整天滞后。
+        stmt = stmt.where(ChipDistribution.ts < date + timedelta(days=1))
     stmt = stmt.order_by(ChipDistribution.ts.desc()).limit(1)
     return (await db.execute(stmt)).scalars().all()
 

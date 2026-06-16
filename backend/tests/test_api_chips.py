@@ -90,3 +90,17 @@ async def test_get_chips_empty(api_client):
     r = await api_client.get("/api/stocks/999999.SH/chips")
     assert r.status_code == 200
     assert r.json() == []
+
+
+@pytest.mark.asyncio
+async def test_get_chips_by_date_includes_same_day(api_client):
+    """date=当日 → 返回当日 chip（含 07:30 北京收盘 ts），不滞后到前一日。
+
+    chip ts=2026-06-13 07:30(UTC)；date=2026-06-13 解析为当日 00:00(UTC)，
+    过滤须用 < 次日 才能包含当日，否则前端按日取筹码会整天滞后。
+    """
+    r = await api_client.get("/api/stocks/600519.SH/chips?date=2026-06-13")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert float(data[0]["profit_ratio"]) == 0.5  # 命中当日 chip，非空

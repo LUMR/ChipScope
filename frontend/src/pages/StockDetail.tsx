@@ -20,7 +20,7 @@ export default function StockDetail() {
   useEffect(() => {
     setDateIdx(Math.max(0, dates.length - 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secucode]);
+  }, [secucode, dates.length]);
 
   useEffect(() => {
     if (dates.length === 0) {
