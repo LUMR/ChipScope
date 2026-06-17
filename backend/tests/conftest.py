@@ -1,3 +1,13 @@
+import os
+
+# 测试强制连独立测试库 chipscope_test，避免每个用例的 TRUNCATE 误伤开发库 chipscope。
+# 必须在任何 app 模块 import 之前 setdefault——database.py 模块级 engine 会在 import 时
+# 调 get_settings()，此处设的环境变量（pydantic-settings 中优先级高于 .env）使其连测试库。
+os.environ.setdefault(
+    "CHIPSCOPE_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5433/chipscope_test",
+)
+
 import pytest
 import pytest_asyncio
 import respx
