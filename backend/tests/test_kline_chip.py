@@ -1,4 +1,5 @@
 """kline_chip 编排层 + watchlist 采集触发的测试。"""
+import asyncio
 import httpx
 import pytest
 import pytest_asyncio
@@ -136,10 +137,16 @@ async def kline_chip_client():
 
     from app.api.deps import get_db
     from app.main import app
+    import app.api.watchlist as wl
     app.dependency_overrides[get_db] = override_get_db
+    # 后台采集用 database.SessionLocal（全局 engine）；注入为 fixture 的 SessionLocal，
+    # 使后台 task 的连接随 fixture engine 一起 dispose，避免跨测试 event loop 的连接泄漏 warning。
+    _orig_session_local = wl.SessionLocal
+    wl.SessionLocal = SessionLocal
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    wl.SessionLocal = _orig_session_local
     app.dependency_overrides.clear()
     async with engine.begin() as conn:
         await conn.execute(text(
@@ -181,6 +188,10 @@ async def test_add_watchlist_triggers_ingest(kline_chip_client, respx_mock, monk
     monkeypatch.setattr("app.api.watchlist.TdxClient", _FakeTdx)
     r = await kline_chip_client.post("/api/watchlist", json={"secucode": "600519.SH"})
     assert r.status_code == 201
+    # 采集后台化：POST 立即返回，需显式等后台 task 落库后再断言
+    import app.api.watchlist as wl
+    if wl._background_tasks:
+        await asyncio.gather(*wl._background_tasks, return_exceptions=True)
     assert await _count_rows(DailyKline, "600519.SH") == 3
     assert await _count_rows(ChipDistribution, "600519.SH") == 3
 
@@ -205,7 +216,53 @@ async def test_add_watchlist_ingest_failure_does_not_rollback(kline_chip_client,
     monkeypatch.setattr("app.api.watchlist.TdxClient", _BoomTdx)
     r = await kline_chip_client.post("/api/watchlist", json={"secucode": "600519.SH"})
     assert r.status_code == 201
+    # 等后台 task（其内部 _BoomTdx 抛异常已被 _ingest_in_background 捕获）收尾，避免跨测试泄漏
+    import app.api.watchlist as wl
+    if wl._background_tasks:
+        await asyncio.gather(*wl._background_tasks, return_exceptions=True)
     assert await _count_rows(Watchlist, "600519.SH") == 1
+
+
+@pytest.mark.asyncio
+async def test_add_watchlist_returns_before_ingest_completes(kline_chip_client, monkeypatch):
+    """POST /api/watchlist 在后台采集完成前就返回：采集异步化，不再阻塞响应。
+
+    回归：add_watchlist 曾同步 await ingest_kline_and_chips，导致点击加入自选后要等
+    120 天 K线+筹码采集（数秒~十几秒）才看到自选股出现。改为后台 fire-and-forget 后，
+    POST 在 watchlist 行 commit 后立即返回，采集在后台跑。
+    """
+    import asyncio
+    import app.api.watchlist as wl
+
+    class _FakeTdx:
+        def __init__(self, *a, **kw):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(wl, "TdxClient", _FakeTdx)
+
+    started = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def slow_ingest(*args, **kwargs):
+        started.set()
+        await asyncio.sleep(0.3)  # 模拟慢采集
+        finished.set()
+        return {"klines": 3, "chips": 3}
+
+    monkeypatch.setattr(wl, "ingest_kline_and_chips", slow_ingest)
+
+    r = await kline_chip_client.post("/api/watchlist", json={"secucode": "600519.SH"})
+    assert r.status_code == 201
+    # 后台采集已被调度启动
+    await asyncio.wait_for(started.wait(), timeout=2)
+    assert started.is_set()
+    # 关键：POST 返回时采集尚未完成（同步实现下此处会失败——POST 会等采集跑完）
+    assert not finished.is_set()
+    # 等后台采集结束，避免 task 跨测试泄漏
+    await asyncio.wait_for(finished.wait(), timeout=5)
 
 
 @pytest.mark.asyncio

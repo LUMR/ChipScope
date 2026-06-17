@@ -36,15 +36,17 @@ async def watchlist_client():
 
     from app.api.deps import get_db
     from app.main import app
+    import app.api.watchlist as wl
     app.dependency_overrides[get_db] = override_get_db
+    # add_watchlist 现后台触发采集；这些测试只验证 watchlist 增删改查，桩掉 _schedule_ingest
+    # 以免后台 task 真实连 mootdx 并在 teardown 后 race。respx 仅作未 mock 请求的安全网。
+    _orig_schedule = wl._schedule_ingest
+    wl._schedule_ingest = lambda secucode, secid: None
     transport = ASGITransport(app=app)
-    # add_watchlist 现会同步触发日K采集；mock 返回空，避免真实联网拖慢/触发东财限流。
     with respx.mock(assert_all_called=False) as rx:
-        rx.get("https://push2his.eastmoney.com/api/qt/stock/kline/get").mock(
-            return_value=httpx.Response(200, json={"data": None})
-        )
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             yield client
+    wl._schedule_ingest = _orig_schedule
     app.dependency_overrides.clear()
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE stock_meta, watchlist CASCADE"))
