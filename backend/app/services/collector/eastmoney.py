@@ -90,8 +90,10 @@ class EastMoneyClient:
         for r in rows:
             code = str(r.get("Code") or "")
             mkt = str(r.get("MktNum") or "")
-            # 仅保留沪深 A 股：6 位纯数字代码 + 市场 0(深)/1(沪)
-            if not (code.isdigit() and len(code) == 6 and mkt in ("0", "1")):
+            # 仅保留沪深 A 股 + 科创板：东财 SecurityType 1=沪A, 2=深A(含创业板), 25=科创板。
+            # 不能只看「6 位数字 + MktNum∈{0,1}」——75xxxx 沪市债券同样满足，会混入结果。
+            sec_type = int(r.get("SecurityType") or 0)
+            if sec_type not in (1, 2, 25):
                 continue
             f13 = int(mkt)
             result.append(StockInfo(
