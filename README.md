@@ -19,6 +19,7 @@
 | 资金流向 | 主力 / 超大 / 大 / 中 / 小单净额 | ✅ |
 | 实时行情 | 通达信(mootdx) 五档盘口 → Redis 缓存 + WebSocket 推送；前端实时展示现价/涨跌幅 | ✅ |
 | 自选股管理 | 网页配置自选股（搜索添加 / 拖拽排序 / 删除），联动 scheduler 监控 | ✅ |
+| 分时存档 | 每交易日全市场沪深 A 股当天分时数据落库（~240 分钟点/股），前端按钮手动触发 + 每日 15:30 自动触发 | ✅ |
 | 可视化 | K 线图 + 筹码火焰图 + 指标面板 + 历史回放滑块（B 风格 UI） | ✅ |
 
 ---
@@ -41,7 +42,7 @@
 ├─────────────────────────────────────────────────────┤
 │            FastAPI (:8001) —— 单进程                    │
 │   REST API · WebSocket · 内嵌 APScheduler 定时调度      │
-│              （实时行情 3s / 日终 16:00）                │
+│              （实时 3s / 15:30 分时 / 16:00 股东资金流）  │
 ├──────────────┬──────────────┬────────────────────────┤
 │  数据采集引擎  │  筹码计算引擎  │      实时行情缓存        │
 │  东财 httpx   │   NumPy      │   mootdx → Redis        │
@@ -109,7 +110,7 @@ cd backend
 .venv/Scripts/uvicorn app.main:app --port 8001 --reload
 ```
 
-- **定时任务已内嵌**：盘中每 3s 读 `watchlist` 表拉实时行情 → Redis；每交易日 16:00（Asia/Shanghai）采集股东 + 资金流。无需另起进程。
+- **定时任务已内嵌**（Asia/Shanghai）：盘中每 3s 读 `watchlist` 表拉实时行情 → Redis；**15:30 全市场分时存档**（mootdx）；16:00 采集股东 + 资金流（东财）；16:05 自选股增量日 K + 重算筹码（mootdx）。无需另起进程。
 - 首次启动若 `watchlist` 表为空，用 `CHIPSCOPE_WATCHLIST_DEFAULT` 种子初始化（仅插入已存在于 stock_meta 的）。
 - **前端由 :8001 静态托管**：访问 http://localhost:8001 即是完整应用；API 文档 http://localhost:8001/docs。
 - 若不想在 API 进程里跑调度（如生产分离部署），设 `CHIPSCOPE_SCHEDULER_ENABLED=false`，再单独 `.venv/Scripts/python -m app.scheduler`。
@@ -150,6 +151,8 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 | `CHIPSCOPE_WATCHLIST_DEFAULT` | `600519.SH,000001.SZ,000858.SZ,601318.SH,002594.SZ` | watchlist 表为空时首次 seed 的自选股（逗号分隔 secucode，全格式） |
 | `CHIPSCOPE_SCHEDULER_ENABLED` | `true` | 是否在 uvicorn 进程内嵌入定时任务；`false` 时需另起 `python -m app.scheduler` |
 | `CHIPSCOPE_FRONTEND_DIST` | `<项目根>/frontend/dist` | 前端构建产物目录；指向含 index.html 的目录即启用 :8001 静态托管，否则退化为纯 API |
+| `CHIPSCOPE_KLINE_HISTORY_DAYS` | `120` | 加自选时首次拉取的日 K 天数；daily 任务无数据兜底天数 |
+| `CHIPSCOPE_CHIP_DECAY_DEFAULT` | `2.0` | 无股东数据（新股/未跑 daily）时的筹码衰减系数兜底 |
 
 ---
 
@@ -169,6 +172,8 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 | POST | `/api/watchlist` | 添加自选（body `{secucode}`，幂等） |
 | DELETE | `/api/watchlist/{secucode}` | 移出自选 |
 | PUT | `/api/watchlist/reorder` | 拖拽排序（body `{secucodes:[...]}`） |
+| POST | `/api/archive/minute?date=` | 触发全市场分时存档（异步后台，202；运行中 409；非法日期 422） |
+| GET | `/api/archive/minute/status` | 存档任务状态（state/total/done/ok/failed），前端轮询进度 |
 | WS  | `/ws/realtime/{code}` | 单股实时行情订阅（code 为裸代码） |
 | WS  | `/ws/realtime` | 全局实时行情订阅（所有自选股） |
 
@@ -207,12 +212,12 @@ chipscope/
 │   │   ├── services/
 │   │   │   ├── chip_engine.py / chip_metrics.py / chip_pattern.py / chip_compute.py
 │   │   │   ├── collector/  # eastmoney / tdx_client / retry
-│   │   │   ├── ingest.py / realtime.py
+│   │   │   ├── ingest.py / realtime.py / kline_chip.py / minute_archive.py
 │   │   │   └── ...
 │   │   └── utils/
-│   ├── alembic/versions/   # 0001 init · 0002 holders+flow · 0003 chip_distribution · 0004 watchlist
-│   ├── scripts/            # seed_demo / smoke_ingest / smoke_chip
-│   └── tests/              # 55 测试，纯算法 + API + 采集器 + watchlist
+│   ├── alembic/versions/   # 0001 init · 0002 holders+flow · 0003 chip_distribution · 0004 watchlist · 0005 float_shares · 0006 minute_quote
+│   ├── scripts/            # seed_demo / smoke_ingest / smoke_chip / smoke_minute_archive
+│   └── tests/              # 97 测试，纯算法 + API + 采集器 + watchlist + archive
 ├── frontend/
 │   └── src/                # pages / components / api / hooks / types
 ├── docker-compose.yml      # db(PostgreSQL 15) + redis
@@ -224,14 +229,17 @@ chipscope/
 ## 测试与脚本
 
 ```bash
-# 后端测试（需 docker 里的 PG 在线，测试直连真实库做 TRUNCATE 隔离）
-cd backend && .venv/Scripts/python -m pytest            # 55 passed
+# 后端测试（独立测试库 chipscope_test，每用例 TRUNCATE 隔离；mock HTTP/TCP，不 mock DB）
+cd backend && .venv/Scripts/python -m pytest            # 97 passed
 
 # 合成数据冒烟：验证筹码引擎端到端（不依赖外部数据源）
 PYTHONPATH=. .venv/Scripts/python scripts/smoke_chip.py
 
 # 真实采集冒烟：拉全市场列表 + 茅台近 30 日K
 .venv/Scripts/python scripts/smoke_ingest.py
+
+# 分时存档冒烟：刷新全市场清单 → 前 N 只真实采分时落库（验证 mootdx minute 全链路）
+PYTHONPATH=. .venv/Scripts/python scripts/smoke_minute_archive.py 5
 
 # 前端
 cd frontend && npm run lint && npx vitest run
@@ -243,11 +251,11 @@ cd frontend && npm run lint && npx vitest run
 
 | 数据 | 源 | 备注 |
 |------|----|------|
-| 日 K / 实时五档 | 东方财富 HTTP / 通达信 mootdx | 当前日 K 采集实际走东财 |
-| 十大流通股东 | 东方财富 `datacenter-web` | 衰减系数来源 |
-| 资金流向 | 东方财富 `fflow` | |
+| 日 K / 实时五档 / 分时 / 股票清单 | 通达信 mootdx（TCP） | K 线主源已切 mootdx 绕过东财反爬；日 K 不复权 |
+| 分时存档 | 通达信 mootdx `minute`/`minutes` | 当天 + 最近若干交易日；仅提供价格/成交量，无均价/成交额 |
+| 十大流通股东 / 资金流向 / 股票搜索 | 东方财富 HTTP | 衰减系数来源；搜索过滤仅沪深 A 股 |
 
-东财接口有限流，`EastMoneyClient` 内置最小请求间隔 + tenacity 指数退避重试。
+东财接口有限流，`EastMoneyClient` 内置最小请求间隔 + tenacity 指数退避重试；mootdx 首次需 `python -m mootdx bestip` 探测最优服务器。
 
 ---
 
@@ -257,8 +265,9 @@ cd frontend && npm run lint && npx vitest run
 
 - **P0–P3（已完成）**：基础设施 / 数据采集 / 筹码引擎 / REST API + WebSocket
 - **P4（已完成）**：前端 K 线 + 火焰图 + 指标面板 + 历史回放
-- **自选股配置页 + UI 重设计（已完成）**：watchlist 表 + CRUD API + 全局 WS；前端 AppLayout（顶部导航 + 常驻自选栏）、自选管理页（dnd-kit 拖拽排序）、B 风格主题、轮询实时报价（现价 + 涨跌幅）。设计见 `docs/superpowers/specs/`，计划见 `docs/superpowers/plans/`
-- **P5（待办）**：Docker 全栈部署、监控告警、真实采集验证、股东/资金流前端可视化
+- **自选股配置页 + UI 重设计（已完成）**：watchlist 表 + CRUD API + 全局 WS；前端 AppLayout（顶部导航 + 常驻自选栏）、自选管理页（dnd-kit 拖拽排序）、B 风格主题、WebSocket 实时报价（现价 + 涨跌幅）。设计见 `docs/superpowers/specs/`，计划见 `docs/superpowers/plans/`
+- **每日全市场分时存档（已完成）**：`minute_quote` 表（JSONB 分时点）+ mootdx `minute`/`minutes` 采集 + A 股前缀过滤；前端「数据存档」页按钮手动触发（异步 + 进度轮询）+ 每日 15:30 cron 自动。spec `docs/superpowers/specs/2026-06-22-daily-minute-quote-archive-design.md`，plan `docs/superpowers/plans/2026-06-22-daily-minute-quote-archive.md`
+- **P5（待办）**：Docker 全栈部署、监控告警、股东/资金流前端可视化
 
 实现计划文档位于 [`docs/superpowers/plans/`](./docs/superpowers/plans/)。
 
@@ -270,4 +279,4 @@ cd frontend && npm run lint && npx vitest run
 - **前端实时行情：** 走 WebSocket `/ws/realtime` 推送（scheduler 嵌入同进程后启用；曾因 scheduler/uvicorn 跨进程临时改轮询，单进程合并后已切回 WS）。连接建立后首条数据需等下一轮广播（≤3s），首屏首渲由 `GET /api/watchlist` 提供初始报价。
 - **自选股单 scope：** watchlist 表预留 `scope` 字段，当前固定 `default`，未实现多用户/分组。
 - **历史回填：** 衰减系数取最近一期季度数据，回填早期历史时存在已知近似。
-- **数据源一致性：** 设计文档以通达信为日 K 主源，当前实现以东方财富为主，文档待同步。
+- **分时存档：** mootdx 分时接口仅提供价格 + 成交量，不含均价/成交额；`minutes` 仅能补最近若干交易日；日 K / 分时均不复权，除权日有跳变。
