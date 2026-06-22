@@ -34,22 +34,20 @@
 
 主键 `(trade_date, secucode)`，保证幂等 upsert（同交易日重跑覆盖）。
 
-`data` JSONB 结构：分钟点数组，每点 5 字段：
+`data` JSONB 结构：分钟点数组，每点 3 字段：
 
 ```json
 [
-  {"t": "09:31", "price": 38.12, "avg": 38.10, "vol": 12300, "amount": 468900.0},
-  {"t": "09:32", "price": 38.20, "avg": 38.15, "vol": 9800,  "amount": 374400.0}
+  {"t": "09:31", "price": 1210.31, "vol": 1692},
+  {"t": "09:32", "price": 1205.41, "vol": 1370}
 ]
 ```
 
-- `t`：`HH:MM`，交易时段内每分钟一个点（约 240 点/天）
-- `price`：该分钟成交价（最新价）
-- `avg`：当日截至该分钟的累计均价
-- `vol`：**该分钟增量成交量（手）**
-- `amount`：**该分钟增量成交额（元）**
+- `t`：`HH:MM`，交易时段每分钟一个点（约 240 点/天）。mootdx 分时返回无时间列，由行号按交易时段推算（行 0..119 → 09:31..11:30；行 120..239 → 13:01..15:00）。
+- `price`：该分钟成交价
+- `vol`：该分钟增量成交量（手）
 
-> **实现期统一语义**：mootdx `minute_time_data` 返回的 volume/amount 若为累计值，解析时须做相邻点差分，统一存为"该分钟增量"。
+> **实测约束**：mootdx `minute()`/`minutes()` 返回 DataFrame 列仅为 `[price, vol, volume]`（vol 与 volume 同值，取 vol），**不提供均价(avg)与成交额(amount)**，故本表只存 `price`+`vol`。若后续需要均价/成交额，应改用 mootdx 1 分钟K（`bars(frequency=7)`，含 OHLCV+amount），不在本设计范围。
 
 迁移：`alembic revision --autogenerate -m "add minute_quote table"`。
 
@@ -69,10 +67,10 @@
 ### 4.2 单只分时拉取与解析
 
 `TdxClient.minute_time(symbol, date=None) -> list[dict]`（新增方法）：
-- `date=None` → mootdx `minute_time_data(symbol)`（当天分时）
-- `date="YYYYMMDD"` → mootdx `history_minute_time_data(symbol, date)`（指定历史日，仅最近若干天可取）
+- `date=None` → mootdx `client.minute(symbol)`（当天分时）
+- `date="YYYYMMDD"` → mootdx `client.minutes(symbol, date)`（指定历史日，仅最近若干天可取）
 - 走线程池 `run_in_executor`（与现有 `quotes`/`daily_bars` 一致）
-- 解析 DataFrame → `data` JSONB 点序列（含 4.1 节语义统一）
+- 解析 DataFrame（实测列 `[price, vol, volume]`）→ 按行号推算 `t` → `data` 点序列 `[{t, price, vol}, ...]`
 
 ### 4.3 主采集函数
 
@@ -156,11 +154,11 @@ Header 增「数据存档」入口（下拉或小面板）：
 - **API**：`POST` 触发后 `GET status` 返回 running；任务在跑时 `POST` 返回 409
 - **单只失败**：mock 中途一只抛错 → 该只计入 failed、其余仍 upsert
 
-## 10. 实现期需验证的风险点
+## 10. 实测确认结论（原风险点）
 
-1. **mootdx 方法签名**：`minute_time_data` / `history_minute_time_data` / `stocks` 是否需显式 `market=` 参数、字段名是否与本文一致。现有 `TdxClient` 用裸 code 调 `quotes`/`bars` 已证明本环境自动识别市场，故大概率一致；实现首步用真实连接打一发确认。
-2. **volume/amount 语义**：确认是累计还是增量，按第 3 节统一为增量。
-3. **`history_minute_time_data` 可回溯天数**：通达信服务器通常仅保留最近若干天；补历史仅支持该窗口内，超出则 failed 计入并日志。
+1. **mootdx 方法签名（已实测）**：`client.minute(symbol)` 当天分时、`client.minutes(symbol, date='YYYYMMDD')` 历史分时、`client.stocks(market=0/1)` 股票清单（0=深 SZ、1=沪 SH）。裸 code 自动识别市场，返回 DataFrame。
+2. **分时字段（已实测）**：`minute`/`minutes` 返回列仅 `[price, vol, volume]`（vol 与 volume 同值，已是每分钟增量），**无均价/成交额/时间列**；时间由交易时段行号推算。
+3. **`minutes` 可回溯天数（已实测）**：通达信服务器仅保留最近若干交易日（实测 2026-06-18 可取、2026-06-19 返回空），补历史仅支持该窗口内，超出返回空 df → 该只该日计 failed 跳过。
 
 ## 11. 不在范围内（YAGNI）
 
