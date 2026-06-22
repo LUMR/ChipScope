@@ -9,7 +9,7 @@ from app.models.stock import StockMeta
 
 
 @pytest.mark.asyncio
-async def test_minute_quote_upsert_roundtrip(db_session):
+async def test_minute_quote_insert_and_select(db_session):
     # 外键依赖：先建 stock_meta
     db_session.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
                              market="SH", secid="1.600519"))

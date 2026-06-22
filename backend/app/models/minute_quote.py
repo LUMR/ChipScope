@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -9,6 +9,10 @@ from app.models.base import Base
 
 class MinuteQuote(Base):
     __tablename__ = "minute_quote"
+
+    __table_args__ = (
+        Index("ix_minute_quote_secucode", "secucode"),
+    )
 
     trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
     secucode: Mapped[str] = mapped_column(
