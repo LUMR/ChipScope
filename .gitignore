@@ -13,3 +13,4 @@ backend/.env
 
 # Visual brainstorming mockups（本地临时产物）
 .superpowers/
+.playwright-mcp/
