@@ -49,7 +49,7 @@ export default function ArchivePage() {
   const running = status?.state === "running";
   const pct =
     status && status.total > 0
-      ? Math.round(((status.done + status.failed) / status.total) * 100)
+      ? Math.round((status.done / status.total) * 100)
       : 0;
 
   return (

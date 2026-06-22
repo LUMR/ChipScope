@@ -76,7 +76,13 @@ async def trigger_minute_archive(
 ):
     if is_archive_running():
         raise HTTPException(status_code=409, detail="archive task already running")
-    trade_date = _parse_date(date_str) if date_str else _today_cst()
+    if date_str:
+        try:
+            trade_date = _parse_date(date_str)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid date format, expected YYYY-MM-DD")
+    else:
+        trade_date = _today_cst()
     _schedule_archive(trade_date)
     return ArchiveTriggerResponse(task_id=trade_date.strftime("%Y%m%d"),
                                   trade_date=trade_date.strftime("%Y-%m-%d"))

@@ -66,3 +66,10 @@ async def test_trigger_rejects_when_running(monkeypatch):
                            base_url="http://test") as ac:
         r = await ac.post("/api/archive/minute")
         assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_trigger_bad_date_returns_422(monkeypatch):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.post("/api/archive/minute", params={"date": "not-a-date"})
+        assert r.status_code == 422

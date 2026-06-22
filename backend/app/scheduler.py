@@ -3,6 +3,7 @@
 - 盘中每 3s 拉取自选股（DB watchlist 表）实时行情 → Redis 缓存 + WebSocket 广播
 - 每交易日 16:00 采集股东 + 资金流（东财）
 - 每交易日 16:05 增量拉自选股日K + 重算筹码分布
+- 每交易日 15:30 存档全市场当天分时数据（mootdx TCP）
 - watchlist 表为空时，用 CHIPSCOPE_WATCHLIST_DEFAULT 环境变量 seed
 """
 import asyncio
@@ -176,8 +177,8 @@ def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
     供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
-    任务编排一致：实时行情每 3s + 每日 16:00 采集股东/资金流 +
-    16:05 增量拉自选股日K/重算筹码。
+    任务编排一致：实时行情每 3s + 每日 15:30 分时存档 +
+    16:00 采集股东/资金流 + 16:05 增量拉自选股日K/重算筹码。
     """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
@@ -194,7 +195,7 @@ async def _amain() -> None:
     await seed_watchlist_if_empty()
     sched = build_scheduler()
     sched.start()
-    print("scheduler started: realtime every 3s, holders/flow at 16:00, kline/chip at 16:05 (Asia/Shanghai)")
+    print("scheduler started: realtime every 3s, archive at 15:30, holders/flow at 16:00, kline/chip at 16:05 (Asia/Shanghai)")
     stop = asyncio.Event()
     try:
         await stop.wait()  # 永远等待，保持 loop 运行
