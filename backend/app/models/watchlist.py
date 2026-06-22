@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -8,6 +8,7 @@ from app.models.base import Base
 
 class Watchlist(Base):
     __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("scope", "secucode"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     secucode: Mapped[str] = mapped_column(

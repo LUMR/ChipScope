@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.models.base import Base
 from app.models.stock import StockMeta
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.types import StockInfo
@@ -18,6 +19,9 @@ async def watchlist_client():
     SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
     async with engine.begin() as conn:
+        # 同 conftest db_session：每用例重建最新 schema，避免旧测试库缺唯一约束/缺列
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text(
             "TRUNCATE stock_meta, watchlist CASCADE"
         ))

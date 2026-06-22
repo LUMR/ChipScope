@@ -50,14 +50,11 @@ async def db_session():
         engine, expire_on_commit=False, class_=AsyncSession
     )
     async with engine.begin() as conn:
+        # 每用例彻底重建 schema：drop_all + create_all 保证表结构与最新 model 一致。
+        # create_all 不修改已存在的表——旧测试库会漂移（缺列/缺唯一约束，如 watchlist 的
+        # (scope,secucode) 约束、minute_quote 的 pre_close）。drop 后重建即永远最新。
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        # 确保新列存在（create_all 不修改已存在的表）
-        try:
-            await conn.execute(text(
-                "ALTER TABLE minute_quote ADD COLUMN IF NOT EXISTS pre_close NUMERIC(12, 3)"
-            ))
-        except Exception:
-            pass  # 列已存在或其他错误，忽略
         await conn.execute(text(f"TRUNCATE {_TRUNCATE_TABLES} CASCADE"))
     async with SessionLocal() as session:
         yield session
