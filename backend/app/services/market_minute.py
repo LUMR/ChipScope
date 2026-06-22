@@ -77,8 +77,11 @@ def aggregate(rows: list[dict]) -> dict:
     is_up = (mat > 0) & ~is_limit_up & valid
     is_down = (mat < 0) & ~is_limit_down & valid
 
+    valid_count = valid.sum(axis=0)             # (240,) 每时刻有效股数
     with np.errstate(all="ignore"):
-        avg = np.nanmean(mat, axis=0)          # (240,)
+        sum_pct = np.nansum(mat, axis=0)        # (240,)；全 NaN 列 nansum=0
+        # 0/0 → nan（valid_count=0 的列），errstate 抑制 invalid-divide 警告
+        avg = np.where(valid_count > 0, sum_pct / valid_count, np.nan)
 
     series = []
     for t in range(_N_POINTS):
