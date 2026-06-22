@@ -29,6 +29,23 @@ def test_filter_a_shares_empty():
     assert _filter_a_shares(pd.DataFrame(), market=0) == []
 
 
+def test_filter_a_shares_strips_null_bytes_in_name():
+    """mootdx stocks() 的 name 含尾部 NULL 字节填充，须清理否则 PG UTF8 列拒收。"""
+    df = pd.DataFrame(
+        {
+            "code": ["600519", "000001"],
+            "name": ["贵州茅台\x00\x00", "平安银行\x00"],
+            "volunit": [100, 100],
+            "decimal_point": [2, 2],
+            "pre_close": [0.0, 0.0],
+        }
+    )
+    sh = _filter_a_shares(df, market=1)
+    assert sh[0].name == "贵州茅台"
+    sz = _filter_a_shares(df, market=0)
+    assert sz[0].name == "平安银行"
+
+
 class _FakeTdx:
     """fake TdxClient：stocks 返回预设 DataFrame。"""
 

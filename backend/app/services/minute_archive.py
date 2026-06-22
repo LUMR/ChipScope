@@ -29,10 +29,12 @@ def _filter_a_shares(df, market: int) -> list[StockInfo]:
     for _, row in df.iterrows():
         code = str(row["code"]).zfill(6)
         if code[:3] in prefixes:
+            # mootdx name 含尾部 NULL 字节填充（定长字段），须清理，否则 PG UTF8 列拒收
+            name = str(row.get("name", code)).replace("\x00", "").strip() or code
             out.append(StockInfo(
                 secucode=f"{code}.{suffix}",
                 code=code,
-                name=str(row.get("name", code)),
+                name=name,
                 market=suffix,
                 secid=f"{secid_pfx}.{code}",
             ))
