@@ -1,6 +1,7 @@
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +20,7 @@ class MinuteQuote(Base):
         String(12), ForeignKey("stock_meta.secucode"), primary_key=True
     )
     data: Mapped[list] = mapped_column(JSONB)  # [{"t":"09:31","price":..,"vol":..}, ...]
+    pre_close: Mapped[Decimal | None] = mapped_column(Numeric(12, 3), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

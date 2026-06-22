@@ -51,6 +51,13 @@ async def db_session():
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 确保新列存在（create_all 不修改已存在的表）
+        try:
+            await conn.execute(text(
+                "ALTER TABLE minute_quote ADD COLUMN IF NOT EXISTS pre_close NUMERIC(12, 3)"
+            ))
+        except Exception:
+            pass  # 列已存在或其他错误，忽略
         await conn.execute(text(f"TRUNCATE {_TRUNCATE_TABLES} CASCADE"))
     async with SessionLocal() as session:
         yield session
