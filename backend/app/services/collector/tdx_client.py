@@ -19,6 +19,30 @@ class RealtimeQuote:
     asks: list[tuple[float, float]]  # 五档卖
 
 
+def _row_to_time(i: int) -> str:
+    """分时行号 → HH:MM。行 0..119 → 09:31..11:30；行 120..239 → 13:01..15:00。"""
+    if i < 120:
+        total = 9 * 60 + 30 + (i + 1)
+    else:
+        total = 13 * 60 + (i - 120 + 1)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _parse_minute_df(df) -> list[dict]:
+    """mootdx 分时 DataFrame（列 price/vol/volume）→ [{t, price, vol}, ...]。
+
+    mootdx 不提供时间/均价/成交额；vol 与 volume 同值取 vol。空 df 返回 []。
+    """
+    if df is None or len(df) == 0:
+        return []
+    prices = df["price"].tolist()
+    vols = df["vol"].tolist()
+    return [
+        {"t": _row_to_time(i), "price": round(float(p), 3), "vol": int(v)}
+        for i, (p, v) in enumerate(zip(prices, vols))
+    ]
+
+
 class TdxClient:
     """mootdx 同步库的异步封装。所有调用走线程池，不阻塞事件循环。"""
 
@@ -58,6 +82,25 @@ class TdxClient:
             prev_close = c
             bars.append(KlineBar(date_str, o, c, h, low, int(vol_hand), amount, pct, turnover, vwap))
         return bars
+
+    async def minute_time(self, symbol: str, date: str | None = None) -> list[dict]:
+        """mootdx 分时 → [{t, price, vol}, ...]（240 个分钟点）。
+
+        date=None 取当天（client.minute）；date='YYYYMMDD' 取历史日（client.minutes）。
+        """
+        loop = asyncio.get_running_loop()
+        if date is None:
+            df = await loop.run_in_executor(self._executor, self._client.minute, symbol)
+        else:
+            df = await loop.run_in_executor(
+                self._executor, lambda: self._client.minutes(symbol=symbol, date=date)
+            )
+        return _parse_minute_df(df)
+
+    async def stocks(self, market: int):
+        """mootdx 全市场股票清单 DataFrame（market=1 沪 / 0 深）。"""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._client.stocks, market)
 
     def _fetch_bars(self, symbol: str, count: int):
         return self._client.bars(symbol=symbol, frequency=9, offset=count)
