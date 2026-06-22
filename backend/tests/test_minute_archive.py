@@ -85,3 +85,67 @@ async def test_upsert_minute_quote_insert_and_idempotent(db_session):
     )).scalars().all()
     assert len(rows) == 1
     assert rows[0].data == pts2  # 已被覆盖
+
+
+class _FakeArchiveTdx:
+    """fake TdxClient：stocks 给清单；minute_time 给分时点（第 3 只抛错测 failed）。"""
+
+    def __init__(self):
+        self.minute_calls = []
+
+    async def stocks(self, market: int):
+        if market == 1:
+            return pd.DataFrame({"code": ["600519"], "name": ["贵州茅台"],
+                                 "volunit": [100], "decimal_point": [2], "pre_close": [0.0]})
+        return pd.DataFrame({"code": ["000001", "300750"], "name": ["平安银行", "宁德时代"],
+                             "volunit": [100, 100], "decimal_point": [2, 2],
+                             "pre_close": [0.0, 0.0]})
+
+    async def minute_time(self, symbol: str, date=None):
+        self.minute_calls.append((symbol, date))
+        if symbol == "300750":
+            raise RuntimeError("boom")
+        return [{"t": "09:31", "price": 10.0, "vol": 100}]
+
+
+@pytest.mark.asyncio
+async def test_archive_minute_quotes_main_flow(db_session):
+    from datetime import date
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from app.config import get_settings
+    from app.models.base import Base
+    from sqlalchemy import text
+    from app.services.minute_archive import (
+        archive_minute_quotes, get_archive_status, reset_archive_state,
+    )
+
+    # 用独立 engine + session_factory，避免复用模块级 SessionLocal 导致
+    # Windows ProactorEventLoop 跨 loop 连接泄漏。
+    _engine = create_async_engine(get_settings().database_url)
+    _factory = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "TRUNCATE stock_meta, minute_quote CASCADE"
+        ))
+
+    reset_archive_state()
+    progress = []
+
+    def on_progress(done, total, failed):
+        progress.append((done, total, failed))
+
+    result = await archive_minute_quotes(
+        _factory, _FakeArchiveTdx(), date(2026, 6, 22), on_progress=on_progress
+    )
+    assert result == {"trade_date": "2026-06-22", "total": 3, "ok": 2, "failed": 1}
+    assert progress[-1] == (3, 3, 1)  # 末次进度为完成态
+
+    # 断言：db_session 和 _factory 共享同一测试库
+    from app.models.minute_quote import MinuteQuote
+    rows = (await db_session.execute(
+        select(MinuteQuote.secucode).order_by(MinuteQuote.secucode)
+    )).scalars().all()
+    assert rows == ["000001.SZ", "600519.SH"]
+
+    await _engine.dispose()
