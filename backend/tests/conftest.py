@@ -15,6 +15,20 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.models.base import Base
+# import 全部 model，让 Base.metadata 在 create_all 时覆盖所有表（含 minute_quote）
+import app.models.stock  # noqa: F401
+import app.models.kline  # noqa: F401
+import app.models.holder  # noqa: F401
+import app.models.flow  # noqa: F401
+import app.models.chip  # noqa: F401
+import app.models.watchlist  # noqa: F401
+import app.models.minute_quote  # noqa: F401
+
+_TRUNCATE_TABLES = (
+    "stock_meta, daily_kline, top_holders, holder_summary, money_flow, "
+    "chip_distribution, watchlist, minute_quote"
+)
 
 
 @pytest.fixture
@@ -35,11 +49,11 @@ async def db_session():
     SessionLocal = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
     )
-
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, chip_distribution, watchlist CASCADE"))
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(f"TRUNCATE {_TRUNCATE_TABLES} CASCADE"))
     async with SessionLocal() as session:
         yield session
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, chip_distribution, watchlist CASCADE"))
+        await conn.execute(text(f"TRUNCATE {_TRUNCATE_TABLES} CASCADE"))
     await engine.dispose()
