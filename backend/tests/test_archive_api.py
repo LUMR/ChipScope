@@ -34,7 +34,7 @@ async def test_trigger_then_status_done(monkeypatch):
 
     async def _fake_run(td):
         set_archive_status({"state": "done", "trade_date": str(td),
-                            "total": 2, "ok": 2, "failed": 0})
+                            "total": 2, "done": 2, "ok": 2, "failed": 0})
     monkeypatch.setattr(arch, "_run_archive", _fake_run)
 
     async with AsyncClient(transport=ASGITransport(app=app),
@@ -48,6 +48,7 @@ async def test_trigger_then_status_done(monkeypatch):
         body = s.json()
         assert body["state"] == "done"
         assert body["ok"] == 2
+        assert body["done"] == 2
 
 
 @pytest.mark.asyncio

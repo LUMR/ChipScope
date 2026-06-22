@@ -28,7 +28,7 @@ async def _run_archive(trade_date: date) -> None:
     td_str = trade_date.strftime("%Y-%m-%d")
     set_archive_status({
         "state": "running", "trade_date": td_str,
-        "total": 0, "done": 0, "failed": 0,
+        "total": 0, "done": 0, "ok": 0, "failed": 0,
         "started_at": started, "finished_at": None, "error": None,
     })
     tdx = TdxClient()
@@ -36,20 +36,22 @@ async def _run_archive(trade_date: date) -> None:
         def on_progress(done, total, failed):
             set_archive_status({
                 "state": "running", "trade_date": td_str,
-                "total": total, "done": done, "failed": failed,
+                "total": total, "done": done, "ok": done - failed, "failed": failed,
                 "started_at": started, "finished_at": None, "error": None,
             })
         result = await archive_minute_quotes(
             SessionLocal, tdx, trade_date, on_progress=on_progress
         )
         set_archive_status({
-            "state": "done", **result,
+            "state": "done", "trade_date": td_str,
+            "total": result["total"], "done": result["total"],
+            "ok": result["ok"], "failed": result["failed"],
             "started_at": started, "finished_at": _now_ts(), "error": None,
         })
     except Exception as e:
         set_archive_status({
             "state": "error", "trade_date": td_str,
-            "total": 0, "done": 0, "failed": 0,
+            "total": 0, "done": 0, "ok": 0, "failed": 0,
             "started_at": started, "finished_at": _now_ts(), "error": str(e),
         })
     finally:
