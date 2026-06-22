@@ -108,7 +108,7 @@
 
 ## 6. 进度与状态
 
-状态存 Redis（复用现有 `redis_url`），key `archive:minute:status`，TTL 24h：
+状态存**进程内模块级变量**（`services/minute_archive.py` 中的 `_archive_status`/`_archive_running`）：
 
 ```json
 {
@@ -123,9 +123,12 @@
 }
 ```
 
+> **为何用内存而非 Redis**：单进程模式下 API 与 cron 同进程，模块级变量对二者与轮询请求均可见；盘后任务状态短暂，重启丢失可接受。内存方案免去给测试引入 Redis 依赖（现有 `conftest` 无 Redis fixture），更简单（YAGNI）。若将来切多进程，再换 Redis。
+
 - 任务启动写 `running`，采集函数通过 `on_progress` 回调更新 `done/failed`，结束写 `done`/`error`
-- 防重入：启动前 `GET` 状态，`state==running` 即拒绝（见 5.1 的 409）
+- 防重入：启动前检查 `_archive_running`，为真即拒绝（见 5.1 的 409）
 - 前端轮询 `GET status`（间隔 2s）渲染进度条
+- 模块提供 `reset_archive_state()` 供测试清理
 
 ## 7. 前端
 
