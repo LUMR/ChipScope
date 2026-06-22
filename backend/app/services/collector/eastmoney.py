@@ -11,6 +11,7 @@ _LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 _KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 _SUGGEST_URL = "https://searchapi.eastmoney.com/api/suggest/get"
 _HOLDERS_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+_STOCK_GET_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 
 # 东财 fs：沪深主板/创业板/科创板（北交所 m:0 t:81 留待后续）
 _A_SHARE_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
@@ -89,8 +90,10 @@ class EastMoneyClient:
         for r in rows:
             code = str(r.get("Code") or "")
             mkt = str(r.get("MktNum") or "")
-            # 仅保留沪深 A 股：6 位纯数字代码 + 市场 0(深)/1(沪)
-            if not (code.isdigit() and len(code) == 6 and mkt in ("0", "1")):
+            # 仅保留沪深 A 股 + 科创板：东财 SecurityType 1=沪A, 2=深A(含创业板), 25=科创板。
+            # 不能只看「6 位数字 + MktNum∈{0,1}」——75xxxx 沪市债券同样满足，会混入结果。
+            sec_type = int(r.get("SecurityType") or 0)
+            if sec_type not in (1, 2, 25):
                 continue
             f13 = int(mkt)
             result.append(StockInfo(
@@ -160,6 +163,16 @@ class EastMoneyClient:
         resp = await self._client.get(url, params=params)
         resp.raise_for_status()
         return (resp.json().get("data") or {}).get("klines") or []
+
+    @em_retry
+    async def fetch_float_shares(self, secid: str) -> float:
+        """push2 stock/get 的 f85 流通股本（股）。@em_retry 覆盖速率反爬的 RemoteProtocolError。"""
+        await self._throttle()
+        params = {"secid": secid, "fltt": "2", "fields": "f85"}
+        resp = await self._client.get(_STOCK_GET_URL, params=params)
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+        return float(data.get("f85") or 0)
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -21,7 +21,7 @@ export default function ChipFlame({ chip }: { chip?: ChipDistribution }) {
         formatter: (v: number) => `${(v * 100).toFixed(0)}%`,
       },
     },
-    yAxis: { type: "category", data: prices, inverse: true },
+    yAxis: { type: "category", data: prices },
     series: [
       {
         type: "bar",

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import redis.asyncio as aioredis
@@ -8,12 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.config import get_settings
+from app.database import SessionLocal
 from app.models.stock import StockMeta
 from app.models.watchlist import Watchlist
 from app.schemas.watchlist import ReorderRequest, WatchlistCreateRequest, WatchlistItemOut
 from app.services.collector.eastmoney import EastMoneyClient
+from app.services.collector.tdx_client import TdxClient
 from app.services.collector.types import StockInfo
 from app.services.ingest import upsert_stock_meta
+from app.services.kline_chip import ingest_kline_and_chips
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -83,6 +87,39 @@ async def _ensure_stock_meta(db: AsyncSession, secucode: str) -> StockMeta | Non
     ).scalar_one_or_none()
 
 
+# 后台采集 task 引用集合：持有以防 GC，task 完成后自动移除。
+_background_tasks: set[asyncio.Task] = set()
+
+
+async def _ingest_in_background(secucode: str, secid: str) -> None:
+    """后台采集历史日K + 筹码：自建 db session / TdxClient / EastMoneyClient。
+
+    请求级 session 在响应返回后即关闭，故此处用 SessionLocal 自建；mootdx 同步调用
+    已在 TdxClient.daily_bars 内部 run_in_executor。异常仅记日志——watchlist 行已
+    commit，采集失败不得影响已返回的 201。
+    """
+    tdx = TdxClient()
+    try:
+        async with SessionLocal() as session:
+            async with EastMoneyClient() as em:
+                r = await ingest_kline_and_chips(
+                    tdx, em, session, secucode, secid,
+                    days=get_settings().kline_history_days,
+                )
+        print(f"[watchlist] {secucode} ingested: {r}")
+    except Exception as e:
+        print(f"[watchlist] {secucode} kline/chip ingest failed: {e}")
+    finally:
+        tdx.close()
+
+
+def _schedule_ingest(secucode: str, secid: str) -> None:
+    """后台 fire-and-forget 触发采集；持有 task 引用防 GC，完成后自动移除。"""
+    task = asyncio.create_task(_ingest_in_background(secucode, secid))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @router.post("", response_model=WatchlistItemOut, status_code=201)
 async def add_watchlist(
     body: WatchlistCreateRequest, db: AsyncSession = Depends(get_db)
@@ -109,6 +146,10 @@ async def add_watchlist(
     )
     await db.execute(stmt)
     await db.commit()
+
+    # 后台异步采集历史日K + 筹码（K线走 mootdx TCP，绕过东财反爬）。
+    # 采集在后台跑，POST 立即返回；watchlist 行已 commit，采集失败仅记日志、不回滚。
+    _schedule_ingest(body.secucode, exists.secid)
 
     row = (
         await db.execute(

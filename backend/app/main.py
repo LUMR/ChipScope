@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.chips import router as chips_router
 from app.api.stocks import router as stocks_router
+from app.api.archive import router as archive_router
 from app.api.watchlist import router as watchlist_router
 from app.api.websocket import router as ws_router
 from app.config import get_settings
@@ -55,6 +56,7 @@ app.include_router(stocks_router)
 app.include_router(chips_router)
 app.include_router(ws_router)
 app.include_router(watchlist_router)
+app.include_router(archive_router)
 
 
 @app.get("/health")

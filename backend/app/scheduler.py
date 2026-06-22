@@ -2,6 +2,8 @@
 
 - 盘中每 3s 拉取自选股（DB watchlist 表）实时行情 → Redis 缓存 + WebSocket 广播
 - 每交易日 16:00 采集股东 + 资金流（东财）
+- 每交易日 16:05 增量拉自选股日K + 重算筹码分布
+- 每交易日 15:30 存档全市场当天分时数据（mootdx TCP）
 - watchlist 表为空时，用 CHIPSCOPE_WATCHLIST_DEFAULT 环境变量 seed
 """
 import asyncio
@@ -17,6 +19,8 @@ from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
+from app.services.kline_chip import ingest_kline_and_chips
+from app.services.minute_archive import archive_minute_quotes
 from app.services.realtime import cache_quote, manager
 
 SCOPE = "default"
@@ -128,15 +132,62 @@ async def daily_holders_flow() -> None:
                 print(f"[daily] {s.secucode} error: {e}")
 
 
+async def daily_kline_chip() -> None:
+    """16:05 增量拉 watchlist 自选股日K + 重算筹码（mootdx TCP，绕过东财反爬）。
+
+    盘后任务，错开 16:00 holders/flow 任务 5 分钟。遍历 watchlist（用户关心的子集），
+    单只 try/except 不影响其他。TdxClient 全任务复用一个连接。
+    """
+    tdx = TdxClient()
+    try:
+        async with EastMoneyClient() as em, SessionLocal() as session:
+            stmt = (
+                select(Watchlist.secucode, StockMeta.secid)
+                .join(StockMeta, Watchlist.secucode == StockMeta.secucode)
+                .where(Watchlist.scope == SCOPE)
+            )
+            rows = (await session.execute(stmt)).all()
+            for secucode, secid in rows:
+                try:
+                    r = await ingest_kline_and_chips(
+                        tdx, em, session, secucode, secid,
+                        days=get_settings().kline_history_days,
+                    )
+                    print(f"[daily_kline_chip] {secucode}: {r}")
+                except Exception as e:
+                    print(f"[daily_kline_chip] {secucode} error: {e}")
+    finally:
+        tdx.close()
+
+
+async def daily_minute_archive() -> None:
+    """15:30 增量存档全市场当天分时数据（mootdx TCP）。
+
+    与 daily（16:00 holders/flow）错开 30 分钟，独立 TdxClient 连接。
+    """
+    tdx = TdxClient()
+    try:
+        trade_date = _today_cst()
+        await archive_minute_quotes(SessionLocal, tdx, trade_date)
+    finally:
+        tdx.close()
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
     供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
-    任务编排一致：实时行情每 3s + 每日 16:00 采集股东/资金流。
+    任务编排一致：实时行情每 3s + 每日 15:30 分时存档 +
+    16:00 采集股东/资金流 + 16:05 增量拉自选股日K/重算筹码。
     """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
     sched.add_job(daily_holders_flow, CronTrigger(hour=16, minute=0), id="daily")
+    sched.add_job(daily_kline_chip, CronTrigger(hour=16, minute=5), id="daily_kline_chip")
+    sched.add_job(
+        daily_minute_archive, CronTrigger(hour=15, minute=30),
+        id="daily_minute_archive",
+    )
     return sched
 
 
@@ -144,7 +195,7 @@ async def _amain() -> None:
     await seed_watchlist_if_empty()
     sched = build_scheduler()
     sched.start()
-    print("scheduler started: realtime every 3s, holders/flow at 16:00 (Asia/Shanghai)")
+    print("scheduler started: realtime every 3s, archive at 15:30, holders/flow at 16:00, kline/chip at 16:05 (Asia/Shanghai)")
     stop = asyncio.Event()
     try:
         await stop.wait()  # 永远等待，保持 loop 运行
@@ -154,6 +205,12 @@ async def _amain() -> None:
 
 def main() -> None:
     asyncio.run(_amain())
+
+
+def _today_cst():
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
 
 
 if __name__ == "__main__":

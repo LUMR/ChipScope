@@ -1,3 +1,13 @@
+import os
+
+# 测试强制连独立测试库 chipscope_test，避免每个用例的 TRUNCATE 误伤开发库 chipscope。
+# 必须在任何 app 模块 import 之前 setdefault——database.py 模块级 engine 会在 import 时
+# 调 get_settings()，此处设的环境变量（pydantic-settings 中优先级高于 .env）使其连测试库。
+os.environ.setdefault(
+    "CHIPSCOPE_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5433/chipscope_test",
+)
+
 import pytest
 import pytest_asyncio
 import respx
@@ -5,6 +15,20 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.models.base import Base
+# import 全部 model，让 Base.metadata 在 create_all 时覆盖所有表（含 minute_quote）
+import app.models.stock  # noqa: F401
+import app.models.kline  # noqa: F401
+import app.models.holder  # noqa: F401
+import app.models.flow  # noqa: F401
+import app.models.chip  # noqa: F401
+import app.models.watchlist  # noqa: F401
+import app.models.minute_quote  # noqa: F401
+
+_TRUNCATE_TABLES = (
+    "stock_meta, daily_kline, top_holders, holder_summary, money_flow, "
+    "chip_distribution, watchlist, minute_quote"
+)
 
 
 @pytest.fixture
@@ -25,11 +49,11 @@ async def db_session():
     SessionLocal = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
     )
-
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, chip_distribution, watchlist CASCADE"))
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(f"TRUNCATE {_TRUNCATE_TABLES} CASCADE"))
     async with SessionLocal() as session:
         yield session
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, chip_distribution, watchlist CASCADE"))
+        await conn.execute(text(f"TRUNCATE {_TRUNCATE_TABLES} CASCADE"))
     await engine.dispose()

@@ -85,8 +85,8 @@ async def test_search_stocks_parses_sh_and_sz(respx_mock):
         return_value=httpx.Response(
             200,
             json={"QuotationCodeTable": {"Data": [
-                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1"},
-                {"Code": "000001", "Name": "平安银行", "MktNum": "0"},
+                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1", "SecurityType": "1"},
+                {"Code": "000001", "Name": "平安银行", "MktNum": "0", "SecurityType": "2"},
             ]}},
         )
     )
@@ -104,16 +104,41 @@ async def test_search_stocks_filters_non_a_share(respx_mock):
         return_value=httpx.Response(
             200,
             json={"QuotationCodeTable": {"Data": [
-                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1"},
-                {"Code": "00700", "Name": "腾讯控股", "MktNum": "116"},  # 港股：5 位代码
-                {"Code": "1A0001", "Name": "上证指数", "MktNum": "1"},  # 指数：非纯数字
-                {"Code": "600600", "Name": "某境外", "MktNum": "116"},  # 6 位但市场非 A 股
+                {"Code": "600519", "Name": "贵州茅台", "MktNum": "1", "SecurityType": "1"},   # 沪A
+                {"Code": "00700", "Name": "腾讯控股", "MktNum": "116", "SecurityType": "19"}, # 港股
+                {"Code": "1A0001", "Name": "上证指数", "MktNum": "1", "SecurityType": "5"},   # 指数
+                {"Code": "600600", "Name": "某境外", "MktNum": "116", "SecurityType": "19"},  # 港股
             ]}},
         )
     )
     async with EastMoneyClient() as em:
         stocks = await em.search_stocks("600")
     assert [s.secucode for s in stocks] == ["600519.SH"]
+
+
+@pytest.mark.asyncio
+async def test_search_stocks_filters_bonds_keeps_a_shares(respx_mock):
+    """仅留沪深 A 股 + 科创板，过滤债券/ETF 等同名品种。
+
+    东财 SecurityType 真实值：1=沪A, 2=深A(含创业板), 25=科创板；16=债券, 8=ETF。
+    回归 1：搜"交通银行"时其金融债（SecurityType=16）曾因「6位数字+MktNum=1」绕过过滤。
+    回归 2：过滤曾误写为 (2,25) 漏掉沪A（1），导致沪市 A 股全部被滤、搜索返回空。
+    """
+    respx_mock.get("https://searchapi.eastmoney.com/api/suggest/get").mock(
+        return_value=httpx.Response(
+            200,
+            json={"QuotationCodeTable": {"Data": [
+                {"Code": "601328", "Name": "交通银行", "MktNum": "1", "SecurityType": "1"},    # 沪A
+                {"Code": "751087", "Name": "交通银行", "MktNum": "1", "SecurityType": "16"},   # 债券（须过滤）
+                {"Code": "159666", "Name": "交运ETF华夏", "MktNum": "0", "SecurityType": "8"}, # ETF（须过滤）
+                {"Code": "688981", "Name": "中芯国际", "MktNum": "1", "SecurityType": "25"},   # 科创板
+                {"Code": "000001", "Name": "平安银行", "MktNum": "0", "SecurityType": "2"},    # 深A
+            ]}},
+        )
+    )
+    async with EastMoneyClient() as em:
+        stocks = await em.search_stocks("交通银行")
+    assert [s.secucode for s in stocks] == ["601328.SH", "688981.SH", "000001.SZ"]
 
 
 @pytest.mark.asyncio
@@ -124,3 +149,23 @@ async def test_search_stocks_empty_when_no_data(respx_mock):
     async with EastMoneyClient() as em:
         stocks = await em.search_stocks("xxx")
     assert stocks == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_float_shares_parses_f85(respx_mock):
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": {"f85": 20628944429}})
+    )
+    async with EastMoneyClient() as em:
+        fs = await em.fetch_float_shares("1.600036")
+    assert fs == 20628944429
+
+
+@pytest.mark.asyncio
+async def test_fetch_float_shares_zero_when_no_data(respx_mock):
+    respx_mock.get("https://push2.eastmoney.com/api/qt/stock/get").mock(
+        return_value=httpx.Response(200, json={"data": None})
+    )
+    async with EastMoneyClient() as em:
+        fs = await em.fetch_float_shares("1.600036")
+    assert fs == 0.0

@@ -9,7 +9,11 @@ export default function TopNav() {
   const [text, setText] = useState("");
   const opts = useStockSearch(text);
 
-  const activeKey = loc.pathname.startsWith("/watchlist") ? "watchlist" : "market";
+  const activeKey = loc.pathname.startsWith("/watchlist")
+    ? "watchlist"
+    : loc.pathname.startsWith("/archive")
+    ? "archive"
+    : "market";
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 24, height: "100%" }}>
@@ -21,6 +25,7 @@ export default function TopNav() {
         items={[
           { key: "market", label: "行情", onClick: () => nav("/") },
           { key: "watchlist", label: "自选管理", onClick: () => nav("/watchlist") },
+          { key: "archive", label: "数据存档", onClick: () => nav("/archive") },
         ]}
       />
       <AutoComplete

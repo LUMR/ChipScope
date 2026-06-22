@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # 自选股默认种子（逗号分隔 secucode），watchlist 表为空时首次写入
     watchlist_default: str = "600519.SH,000001.SZ,000858.SZ,601318.SH,002594.SZ"
 
+    # 添加自选股时首次拉取的历史日K天数；daily 任务无数据兜底天数
+    kline_history_days: int = 120
+    # 无 holder_summary（新股/未跑 daily_holders_flow）时的筹码衰减系数
+    chip_decay_default: float = 2.0
+
     # 是否在 FastAPI 进程内嵌入定时任务（单进程单端口模式）。
     # 关闭后 uvicorn 仅提供 API，需另起 `python -m app.scheduler` 跑调度。
     scheduler_enabled: bool = True

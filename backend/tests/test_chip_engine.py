@@ -47,3 +47,18 @@ def test_decay_step_preserves_total_when_full_turnover():
     today = np.ones(400) * 0.0
     new = decay_step(old, today, turnover_rate=100.0, decay_coeff=10.0)
     assert new.sum() == pytest.approx(100.0 * 400 * 0.05, rel=1e-4)
+
+
+def test_decay_step_zero_turnover_accumulates():
+    """turnover=0（流通股本缺失/东财限流）→ 纯累加，保证首根也能出图（决策#4）。
+
+    无换手率时退化为 new=today_tri+old_dist，否则首根 old=0 会全程为 0 → 筹码图空白。
+    """
+    today = np.ones(400) * 10.0
+    old = np.zeros(400)
+    # 首根 old=0 → new=today（非全 0）
+    new = decay_step(old, today, turnover_rate=0.0, decay_coeff=2.0)
+    assert new.sum() == pytest.approx(10.0 * 400, rel=1e-4)
+    # 第二根继续累加
+    new2 = decay_step(new, today, turnover_rate=0.0, decay_coeff=2.0)
+    assert new2.sum() == pytest.approx(20.0 * 400, rel=1e-4)
