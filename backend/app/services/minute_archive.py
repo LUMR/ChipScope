@@ -1,6 +1,4 @@
 """全市场分时行情存档：A 股清单刷新 + 分时采集 + upsert + 内存状态。"""
-import asyncio
-import time
 from datetime import date
 
 from sqlalchemy import func
@@ -8,7 +6,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models.minute_quote import MinuteQuote
-from app.models.stock import StockMeta
 from app.services.collector.tdx_client import TdxClient
 from app.services.collector.types import StockInfo
 from app.services.ingest import upsert_stock_meta

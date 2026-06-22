@@ -139,6 +139,7 @@ async def test_archive_minute_quotes_main_flow(db_session):
         _factory, _FakeArchiveTdx(), date(2026, 6, 22), on_progress=on_progress
     )
     assert result == {"trade_date": "2026-06-22", "total": 3, "ok": 2, "failed": 1}
+    assert get_archive_status() is None  # archive_minute_quotes 不自设状态，由调用方管理
     assert progress[-1] == (3, 3, 1)  # 末次进度为完成态
 
     # 断言：db_session 和 _factory 共享同一测试库
