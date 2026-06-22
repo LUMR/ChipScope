@@ -6,7 +6,21 @@ from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from app.database import SessionLocal
-from app.schemas.archive import ArchiveStatusOut, ArchiveTriggerResponse
+from app.schemas.archive import (
+    ArchiveStatusOut,
+    ArchiveTriggerResponse,
+    BackfillStatusOut,
+    BackfillTriggerResponse,
+)
+from app.services.chip_backfill import (
+    backfill_watchlist_chips,
+    get_backfill_status,
+    is_backfill_running,
+    parse_days,
+    set_backfill_running,
+    set_backfill_status,
+)
+from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.minute_archive import (
     _today_cst,
@@ -95,3 +109,65 @@ async def minute_archive_status():
 
 def _parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
+
+
+async def _run_chip_backfill(days_str: str) -> None:
+    """后台补全：复用一个 TdxClient + EastMoneyClient，全程更新内存状态。异常写 error。"""
+    started = _now_ts()
+    days = parse_days(days_str)  # 端点已校验过，此处再解析取 int
+    set_backfill_status({
+        "state": "running", "window": days_str,
+        "total": 0, "done": 0, "ok": 0, "failed": 0,
+        "started_at": started, "finished_at": None, "error": None,
+    })
+    tdx = TdxClient()
+    try:
+        async with EastMoneyClient() as em:
+            def on_progress(done, total, ok, failed):
+                set_backfill_status({
+                    "state": "running", "window": days_str,
+                    "total": total, "done": done, "ok": ok, "failed": failed,
+                    "started_at": started, "finished_at": None, "error": None,
+                })
+            result = await backfill_watchlist_chips(
+                SessionLocal, tdx, em, days, on_progress=on_progress
+            )
+        set_backfill_status({
+            "state": "done", "window": days_str,
+            "total": result["total"], "done": result["total"],
+            "ok": result["ok"], "failed": result["failed"],
+            "started_at": started, "finished_at": _now_ts(), "error": None,
+        })
+    except Exception as e:
+        set_backfill_status({
+            "state": "error", "window": days_str,
+            "total": 0, "done": 0, "ok": 0, "failed": 0,
+            "started_at": started, "finished_at": _now_ts(), "error": str(e),
+        })
+    finally:
+        tdx.close()
+        set_backfill_running(False)
+
+
+def _schedule_chip_backfill(days_str: str) -> None:
+    set_backfill_running(True)
+    task = asyncio.create_task(_run_chip_backfill(days_str))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+@router.post("/chip-backfill", response_model=BackfillTriggerResponse, status_code=202)
+async def trigger_chip_backfill(days: str = Query(...)):
+    if is_backfill_running():
+        raise HTTPException(status_code=409, detail="chip backfill already running")
+    try:
+        parse_days(days)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid days, expected 120/365/all")
+    _schedule_chip_backfill(days)
+    return BackfillTriggerResponse(task_id=str(_now_ts()), window=days)
+
+
+@router.get("/chip-backfill/status", response_model=BackfillStatusOut | None)
+async def chip_backfill_status():
+    return get_backfill_status()
