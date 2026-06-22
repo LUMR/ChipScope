@@ -19,6 +19,7 @@ from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
 from app.services.kline_chip import ingest_kline_and_chips
+from app.services.minute_archive import archive_minute_quotes
 from app.services.realtime import cache_quote, manager
 
 SCOPE = "default"
@@ -158,6 +159,19 @@ async def daily_kline_chip() -> None:
         tdx.close()
 
 
+async def daily_minute_archive() -> None:
+    """15:30 增量存档全市场当天分时数据（mootdx TCP）。
+
+    与 daily（16:00 holders/flow）错开 30 分钟，独立 TdxClient 连接。
+    """
+    tdx = TdxClient()
+    try:
+        trade_date = _today_cst()
+        await archive_minute_quotes(SessionLocal, tdx, trade_date)
+    finally:
+        tdx.close()
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
@@ -169,6 +183,10 @@ def build_scheduler() -> AsyncIOScheduler:
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
     sched.add_job(daily_holders_flow, CronTrigger(hour=16, minute=0), id="daily")
     sched.add_job(daily_kline_chip, CronTrigger(hour=16, minute=5), id="daily_kline_chip")
+    sched.add_job(
+        daily_minute_archive, CronTrigger(hour=15, minute=30),
+        id="daily_minute_archive",
+    )
     return sched
 
 
@@ -186,6 +204,12 @@ async def _amain() -> None:
 
 def main() -> None:
     asyncio.run(_amain())
+
+
+def _today_cst():
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
 
 
 if __name__ == "__main__":
