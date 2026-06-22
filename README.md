@@ -20,6 +20,7 @@
 | 实时行情 | 通达信(mootdx) 五档盘口 → Redis 缓存 + WebSocket 推送；前端实时展示现价/涨跌幅 | ✅ |
 | 自选股管理 | 网页配置自选股（搜索添加 / 拖拽排序 / 删除），联动 scheduler 监控 | ✅ |
 | 分时存档 | 每交易日全市场沪深 A 股当天分时数据落库（~240 分钟点/股），前端按钮手动触发 + 每日 15:30 自动触发 | ✅ |
+| 自选股筹码补全 | 一键对所有自选股全量重算筹码，补齐停机/漏采缺失的历史日期（按钮手动触发，可选 120/365/全部窗口） | ✅ |
 | 可视化 | K 线图 + 筹码火焰图 + 指标面板 + 历史回放滑块（B 风格 UI） | ✅ |
 
 ---
@@ -174,6 +175,8 @@ PYTHONPATH=. .venv/Scripts/python scripts/seed_demo.py
 | PUT | `/api/watchlist/reorder` | 拖拽排序（body `{secucodes:[...]}`） |
 | POST | `/api/archive/minute?date=` | 触发全市场分时存档（异步后台，202；运行中 409；非法日期 422） |
 | GET | `/api/archive/minute/status` | 存档任务状态（state/total/done/ok/failed），前端轮询进度 |
+| POST | `/api/archive/chip-backfill?days=` | 触发自选股筹码补全（异步后台，202；运行中 409；非法窗口 422） |
+| GET | `/api/archive/chip-backfill/status` | 补全任务状态（state/window/total/done/ok/failed），前端轮询进度 |
 | WS  | `/ws/realtime/{code}` | 单股实时行情订阅（code 为裸代码） |
 | WS  | `/ws/realtime` | 全局实时行情订阅（所有自选股） |
 
@@ -267,6 +270,7 @@ cd frontend && npm run lint && npx vitest run
 - **P4（已完成）**：前端 K 线 + 火焰图 + 指标面板 + 历史回放
 - **自选股配置页 + UI 重设计（已完成）**：watchlist 表 + CRUD API + 全局 WS；前端 AppLayout（顶部导航 + 常驻自选栏）、自选管理页（dnd-kit 拖拽排序）、B 风格主题、WebSocket 实时报价（现价 + 涨跌幅）。设计见 `docs/superpowers/specs/`，计划见 `docs/superpowers/plans/`
 - **每日全市场分时存档（已完成）**：`minute_quote` 表（JSONB 分时点）+ mootdx `minute`/`minutes` 采集 + A 股前缀过滤；前端「数据存档」页按钮手动触发（异步 + 进度轮询）+ 每日 15:30 cron 自动。spec `docs/superpowers/specs/2026-06-22-daily-minute-quote-archive-design.md`，plan `docs/superpowers/plans/2026-06-22-daily-minute-quote-archive.md`
+- **自选股筹码补全（已完成）**：数据存档页加按钮，一键对所有自选股全量重算筹码补齐缺失日期（窗口可选 120/365/全部）。复用 ingest_kline_and_chips 编排 + 存档页按钮/进度模式。spec `docs/superpowers/specs/2026-06-22-watchlist-chip-backfill-design.md`，plan `docs/superpowers/plans/2026-06-22-watchlist-chip-backfill.md`
 - **P5（待办）**：Docker 全栈部署、监控告警、股东/资金流前端可视化
 
 实现计划文档位于 [`docs/superpowers/plans/`](./docs/superpowers/plans/)。
