@@ -21,24 +21,23 @@ N = int(sys.argv[1]) if len(sys.argv) > 1 else 5
 async def main() -> None:
     tdx = TdxClient()
     try:
-        codes = await refresh_stock_universe(SessionLocal, tdx)
-        print(f"[universe] {len(codes)} 只沪深 A 股")
+        stocks = await refresh_stock_universe(SessionLocal, tdx)
+        print(f"[universe] {len(stocks)} 只沪深 A 股")
         td = _today_cst()
         print(f"[trade_date] {td}（date_arg=None → mootdx client.minute 当天分时）")
-        sample = codes[:N]
-        print(f"[sample] 前 {len(sample)} 只：{sample}")
-        for secucode in sample:
-            code = secucode.split(".")[0]
+        sample = stocks[:N]
+        print(f"[sample] 前 {len(sample)} 只：{[s.secucode for s in sample]}")
+        for stk in sample:
             try:
-                pts = await tdx.minute_time(code)  # 当天
+                pts = await tdx.minute_time(stk.code)  # 当天
                 if pts:
                     async with SessionLocal() as s:
-                        await upsert_minute_quote(s, td, secucode, pts)
-                    print(f"[ok]    {secucode}: {len(pts)} 点 | 首={pts[0]} | 末={pts[-1]}")
+                        await upsert_minute_quote(s, td, stk.secucode, pts, stk.pre_close)
+                    print(f"[ok]    {stk.secucode}: {len(pts)} 点 | 首={pts[0]} | 末={pts[-1]}")
                 else:
-                    print(f"[empty] {secucode}: 无分时（非交易日/盘前/服务器无该日）")
+                    print(f"[empty] {stk.secucode}: 无分时（非交易日/盘前/服务器无该日）")
             except Exception as e:
-                print(f"[fail]  {secucode}: {e!r}")
+                print(f"[fail]  {stk.secucode}: {e!r}")
     finally:
         tdx.close()
 
