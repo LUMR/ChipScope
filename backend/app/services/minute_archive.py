@@ -31,39 +31,45 @@ def _filter_a_shares(df, market: int) -> list[StockInfo]:
         if code[:3] in prefixes:
             # mootdx name 含尾部 NULL 字节填充（定长字段），须清理，否则 PG UTF8 列拒收
             name = str(row.get("name", code)).replace("\x00", "").strip() or code
+            raw_pc = row.get("pre_close", None)
+            pre_close = float(raw_pc) if raw_pc not in (None, "") else None
             out.append(StockInfo(
                 secucode=f"{code}.{suffix}",
                 code=code,
                 name=name,
                 market=suffix,
                 secid=f"{secid_pfx}.{code}",
+                pre_close=pre_close,
             ))
     return out
 
 
 async def refresh_stock_universe(
     session_factory: async_sessionmaker[AsyncSession], tdx: TdxClient
-) -> list[str]:
-    """拉沪深全市场股票清单 → 过滤 A 股 → upsert stock_meta。返回 A 股 secucode 列表。"""
+) -> list[StockInfo]:
+    """拉沪深全市场清单 → 过滤 A 股 → upsert stock_meta。返回带 pre_close 的 StockInfo 列表。"""
     df_sh = await tdx.stocks(1)
     df_sz = await tdx.stocks(0)
     a_shares = _filter_a_shares(df_sh, 1) + _filter_a_shares(df_sz, 0)
     async with session_factory() as session:
         await upsert_stock_meta(session, a_shares)
-    return [s.secucode for s in a_shares]
+    return a_shares
 
 
 async def upsert_minute_quote(
-    session: AsyncSession, trade_date: date, secucode: str, points: list[dict]
+    session: AsyncSession, trade_date: date, secucode: str, points: list[dict],
+    pre_close: float | None = None,
 ) -> int:
-    """幂等 upsert 单只分时：ON CONFLICT (trade_date, secucode) DO UPDATE data。"""
+    """幂等 upsert 单只分时：ON CONFLICT (trade_date, secucode) DO UPDATE data+pre_close。"""
     if not points:
         return 0
-    row = {"trade_date": trade_date, "secucode": secucode, "data": points}
+    row = {"trade_date": trade_date, "secucode": secucode, "data": points,
+           "pre_close": pre_close}
     stmt = insert(MinuteQuote).values([row])
     stmt = stmt.on_conflict_do_update(
         index_elements=[MinuteQuote.trade_date, MinuteQuote.secucode],
-        set_={"data": stmt.excluded.data, "updated_at": func.now()},
+        set_={"data": stmt.excluded.data, "pre_close": stmt.excluded.pre_close,
+              "updated_at": func.now()},
     )
     await session.execute(stmt)
     await session.commit()
@@ -110,24 +116,25 @@ async def archive_minute_quotes(
 
     on_progress(done, total, failed) 每只调用一次。返回 {trade_date, total, ok, failed}。
     """
-    secucodes = await refresh_stock_universe(session_factory, tdx)
-    total = len(secucodes)
+    stocks = await refresh_stock_universe(session_factory, tdx)
+    total = len(stocks)
     ok = 0
     failed = 0
     today = _today_cst()
     date_arg = None if trade_date == today else trade_date.strftime("%Y%m%d")
-    for i, secucode in enumerate(secucodes, 1):
-        code = secucode.split(".")[0]
+    for i, s in enumerate(stocks, 1):
         try:
-            points = await tdx.minute_time(code, date_arg)
+            points = await tdx.minute_time(s.code, date_arg)
             if points:
                 async with session_factory() as session:
-                    await upsert_minute_quote(session, trade_date, secucode, points)
+                    await upsert_minute_quote(
+                        session, trade_date, s.secucode, points, s.pre_close
+                    )
                 ok += 1
             else:
                 failed += 1
         except Exception as e:  # 单只失败不影响其他
-            print(f"[archive] {secucode} error: {e}")
+            print(f"[archive] {s.secucode} error: {e}")
             failed += 1
         if on_progress is not None:
             on_progress(i, total, failed)

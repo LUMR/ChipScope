@@ -15,13 +15,15 @@ def test_filter_a_shares_keeps_a_drops_index_bond():
             "name": ["贵州茅台", "上证指数", "可转债", "平安银行", "宁德时代", "ETF"],
             "volunit": [100] * 6,
             "decimal_point": [2] * 6,
-            "pre_close": [0.0] * 6,
+            "pre_close": [1685.0, 4090.0, 0.0, 12.3, 210.5, 1.5],
         }
     )
     sh = _filter_a_shares(df, market=1)
     assert {s.code for s in sh} == {"600519"}
+    assert sh[0].pre_close == 1685.0
     sz = _filter_a_shares(df, market=0)
     assert {s.code for s in sz} == {"000001", "300750"}
+    assert {s.code: s.pre_close for s in sz} == {"000001": 12.3, "300750": 210.5}
 
 
 def test_filter_a_shares_empty():
@@ -65,14 +67,15 @@ async def test_refresh_stock_universe_upserts_a_shares(db_session):
 
     sh_df = pd.DataFrame(
         {"code": ["600519", "999999"], "name": ["贵州茅台", "上证指数"],
-         "volunit": [100, 100], "decimal_point": [2, 2], "pre_close": [0.0, 0.0]}
+         "volunit": [100, 100], "decimal_point": [2, 2], "pre_close": [1685.0, 4090.0]}
     )
     sz_df = pd.DataFrame(
         {"code": ["000001", "159915"], "name": ["平安银行", "ETF"],
-         "volunit": [100, 100], "decimal_point": [2, 2], "pre_close": [0.0, 0.0]}
+         "volunit": [100, 100], "decimal_point": [2, 2], "pre_close": [12.3, 1.5]}
     )
-    codes = await refresh_stock_universe(SessionLocal, _FakeTdx(sh_df, sz_df))
-    assert set(codes) == {"600519.SH", "000001.SZ"}
+    stocks = await refresh_stock_universe(SessionLocal, _FakeTdx(sh_df, sz_df))
+    assert {s.secucode for s in stocks} == {"600519.SH", "000001.SZ"}
+    assert {s.secucode: s.pre_close for s in stocks} == {"600519.SH": 1685.0, "000001.SZ": 12.3}
     rows = (await db_session.execute(
         select(StockMeta.code).order_by(StockMeta.code)
     )).scalars().all()
@@ -90,18 +93,18 @@ async def test_upsert_minute_quote_insert_and_idempotent(db_session):
     await db_session.commit()
 
     pts = [{"t": "09:31", "price": 10.0, "vol": 100}]
-    n1 = await upsert_minute_quote(db_session, date(2026, 6, 22), "600519.SH", pts)
+    n1 = await upsert_minute_quote(db_session, date(2026, 6, 22), "600519.SH", pts, pre_close=1685.0)
     assert n1 == 1
 
     pts2 = [{"t": "09:31", "price": 11.0, "vol": 200}]
-    n2 = await upsert_minute_quote(db_session, date(2026, 6, 22), "600519.SH", pts2)
-    assert n2 == 1  # 覆盖，不新增
+    n2 = await upsert_minute_quote(db_session, date(2026, 6, 22), "600519.SH", pts2, pre_close=1685.0)
+    assert n2 == 1
 
-    rows = (await db_session.execute(
+    row = (await db_session.execute(
         select(MinuteQuote).where(MinuteQuote.secucode == "600519.SH")
-    )).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].data == pts2  # 已被覆盖
+    )).scalar_one()
+    assert row.data == pts2
+    assert float(row.pre_close) == 1685.0
 
 
 class _FakeArchiveTdx:
@@ -113,10 +116,10 @@ class _FakeArchiveTdx:
     async def stocks(self, market: int):
         if market == 1:
             return pd.DataFrame({"code": ["600519"], "name": ["贵州茅台"],
-                                 "volunit": [100], "decimal_point": [2], "pre_close": [0.0]})
+                                 "volunit": [100], "decimal_point": [2], "pre_close": [1685.0]})
         return pd.DataFrame({"code": ["000001", "300750"], "name": ["平安银行", "宁德时代"],
                              "volunit": [100, 100], "decimal_point": [2, 2],
-                             "pre_close": [0.0, 0.0]})
+                             "pre_close": [12.3, 210.5]})
 
     async def minute_time(self, symbol: str, date=None):
         self.minute_calls.append((symbol, date))
@@ -165,5 +168,11 @@ async def test_archive_minute_quotes_main_flow(db_session):
         select(MinuteQuote.secucode).order_by(MinuteQuote.secucode)
     )).scalars().all()
     assert rows == ["000001.SZ", "600519.SH"]
+
+    # pre_close 随分时落库
+    pq_rows = (await db_session.execute(
+        select(MinuteQuote.secucode, MinuteQuote.pre_close).order_by(MinuteQuote.secucode)
+    )).all()
+    assert {r[0]: float(r[1]) for r in pq_rows} == {"000001.SZ": 12.3, "600519.SH": 1685.0}
 
     await _engine.dispose()

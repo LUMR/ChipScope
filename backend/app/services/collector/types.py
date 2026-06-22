@@ -8,6 +8,7 @@ class StockInfo:
     name: str
     market: str  # SH / SZ / BJ
     secid: str  # 1.600519
+    pre_close: float | None = None  # 昨收，来自 mootdx stocks().pre_close
 
 
 @dataclass(frozen=True)
