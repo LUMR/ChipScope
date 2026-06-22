@@ -19,3 +19,23 @@ export const triggerArchive = (date?: string) =>
 
 export const getArchiveStatus = () =>
   apiGet<ArchiveStatus | null>("/archive/minute/status");
+
+export interface BackfillStatus {
+  state: "running" | "done" | "error" | null;
+  window: string | null;
+  total: number;
+  done: number;
+  ok: number;
+  failed: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+}
+
+export const triggerChipBackfill = (days: string) =>
+  apiPost<{ task_id: string; window: string }>(
+    `/archive/chip-backfill?days=${days}`
+  );
+
+export const getChipBackfillStatus = () =>
+  apiGet<BackfillStatus | null>("/archive/chip-backfill/status");
