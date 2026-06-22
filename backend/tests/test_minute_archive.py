@@ -60,3 +60,28 @@ async def test_refresh_stock_universe_upserts_a_shares(db_session):
         select(StockMeta.code).order_by(StockMeta.code)
     )).scalars().all()
     assert rows == ["000001", "600519"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_minute_quote_insert_and_idempotent(db_session):
+    from datetime import date
+    from app.models.minute_quote import MinuteQuote
+    from app.services.minute_archive import upsert_minute_quote
+
+    db_session.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
+                             market="SH", secid="1.600519"))
+    await db_session.commit()
+
+    pts = [{"t": "09:31", "price": 10.0, "vol": 100}]
+    n1 = await upsert_minute_quote(db_session, date(2026, 6, 22), "600519.SH", pts)
+    assert n1 == 1
+
+    pts2 = [{"t": "09:31", "price": 11.0, "vol": 200}]
+    n2 = await upsert_minute_quote(db_session, date(2026, 6, 22), "600519.SH", pts2)
+    assert n2 == 1  # 覆盖，不新增
+
+    rows = (await db_session.execute(
+        select(MinuteQuote).where(MinuteQuote.secucode == "600519.SH")
+    )).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].data == pts2  # 已被覆盖

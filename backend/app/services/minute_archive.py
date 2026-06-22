@@ -1,8 +1,12 @@
 """全市场分时行情存档：A 股清单刷新 + 分时采集 + upsert + 内存状态。"""
 import asyncio
+from datetime import date
 
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
+from app.models.minute_quote import MinuteQuote
 from app.models.stock import StockMeta
 from app.services.collector.tdx_client import TdxClient
 from app.services.collector.types import StockInfo
@@ -47,3 +51,20 @@ async def refresh_stock_universe(
     async with session_factory() as session:
         await upsert_stock_meta(session, a_shares)
     return [s.secucode for s in a_shares]
+
+
+async def upsert_minute_quote(
+    session: AsyncSession, trade_date: date, secucode: str, points: list[dict]
+) -> int:
+    """幂等 upsert 单只分时：ON CONFLICT (trade_date, secucode) DO UPDATE data。"""
+    if not points:
+        return 0
+    row = {"trade_date": trade_date, "secucode": secucode, "data": points}
+    stmt = insert(MinuteQuote).values([row])
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[MinuteQuote.trade_date, MinuteQuote.secucode],
+        set_={"data": stmt.excluded.data, "updated_at": func.now()},
+    )
+    await session.execute(stmt)
+    await session.commit()
+    return 1
