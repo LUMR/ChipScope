@@ -93,3 +93,55 @@ def test_stock_series_with_and_without_pre_close():
                   {"t": "09:32", "price": 110.0, "vol": 200, "pct": 10.0}]
     s2 = stock_series(pts, None)
     assert s2[0]["pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_overview_reads_db_and_caches(db_session):
+    from datetime import date
+    from app.models.minute_quote import MinuteQuote
+    from app.models.stock import StockMeta
+    from app.services import market_minute as mm
+
+    mm.reset_caches()
+    db_session.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
+                             market="SH", secid="1.600519"))
+    db_session.add(StockMeta(secucode="000001.SZ", code="000001", name="平安银行",
+                             market="SZ", secid="0.000001"))
+    await db_session.commit()
+    db_session.add(MinuteQuote(trade_date=date(2026, 6, 22), secucode="600519.SH",
+                               data=[{"t": "09:31", "price": 105.0, "vol": 100}], pre_close=100))
+    db_session.add(MinuteQuote(trade_date=date(2026, 6, 22), secucode="000001.SZ",
+                               data=[{"t": "09:31", "price": 94.0, "vol": 100}], pre_close=100))
+    await db_session.commit()
+
+    out = await mm.get_overview(db_session, date(2026, 6, 22))
+    assert out["summary"]["with_pre_close"] == 2
+    assert out["series"][0]["up"] == 1 and out["series"][0]["down"] == 1
+    # 命中缓存：date(2026,6,22) in _overview_cache
+    assert date(2026, 6, 22) in mm._overview_cache
+
+
+@pytest.mark.asyncio
+async def test_get_ranking_and_stock_and_dates(db_session):
+    from datetime import date
+    from app.models.minute_quote import MinuteQuote
+    from app.models.stock import StockMeta
+    from app.services import market_minute as mm
+
+    mm.reset_caches()
+    db_session.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
+                             market="SH", secid="1.600519"))
+    await db_session.commit()
+    db_session.add(MinuteQuote(trade_date=date(2026, 6, 18), secucode="600519.SH",
+                               data=[{"t": "09:31", "price": 110.0, "vol": 5}], pre_close=100))
+    await db_session.commit()
+
+    rk = await mm.get_ranking(db_session, date(2026, 6, 18), "09:31")
+    assert rk["gainers"][0]["secucode"] == "600519.SH"
+
+    st = await mm.get_stock(db_session, date(2026, 6, 18), "600519.SH")
+    assert st["points"][0]["pct"] == 10.0 and st["pre_close"] == 100.0
+    assert await mm.get_stock(db_session, date(2026, 6, 18), "999999.SZ") is None
+
+    dates = await mm.list_dates(db_session)
+    assert dates == ["2026-06-18"]

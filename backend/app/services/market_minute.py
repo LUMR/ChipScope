@@ -134,3 +134,79 @@ def stock_series(points: list[dict], pre_close) -> list[dict]:
             pct = round((float(p["price"]) / float(pre_close) - 1) * 100, 3)
         out.append({"t": p["t"], "price": float(p["price"]), "vol": int(p["vol"]), "pct": pct})
     return out
+
+
+from datetime import date  # noqa: E402
+
+from sqlalchemy import distinct, select  # noqa: E402
+
+from app.models.minute_quote import MinuteQuote  # noqa: E402
+from app.models.stock import StockMeta  # noqa: E402
+
+_rows_cache: dict[date, list[dict]] = {}
+_overview_cache: dict[date, dict] = {}
+
+
+def reset_caches() -> None:
+    """测试用：清空进程内缓存。"""
+    _rows_cache.clear()
+    _overview_cache.clear()
+
+
+async def load_day(session, trade_date: date) -> list[dict]:
+    """读当日全市场 minute_quote(data, pre_close) join stock_meta(name)。"""
+    stmt = (
+        select(MinuteQuote, StockMeta.name)
+        .join(StockMeta, MinuteQuote.secucode == StockMeta.secucode)
+        .where(MinuteQuote.trade_date == trade_date)
+    )
+    result = await session.execute(stmt)
+    return [
+        {
+            "secucode": mq.secucode,
+            "pre_close": float(mq.pre_close) if mq.pre_close is not None else None,
+            "points": mq.data or [],
+            "name": name,
+        }
+        for mq, name in result
+    ]
+
+
+async def get_overview(session, trade_date: date) -> dict:
+    if trade_date not in _overview_cache:
+        rows = await load_day(session, trade_date)
+        _rows_cache[trade_date] = rows
+        _overview_cache[trade_date] = aggregate(rows)
+    return _overview_cache[trade_date]
+
+
+async def get_ranking(session, trade_date: date, time_str: str) -> dict:
+    idx = _time_to_index(time_str)
+    if idx is None:
+        raise ValueError("invalid time")
+    rows = _rows_cache.get(trade_date) or await load_day(session, trade_date)
+    _rows_cache[trade_date] = rows
+    return ranking_at(rows, idx)
+
+
+async def get_stock(session, trade_date: date, secucode: str) -> dict | None:
+    stmt = (
+        select(MinuteQuote, StockMeta.name)
+        .join(StockMeta, MinuteQuote.secucode == StockMeta.secucode)
+        .where(MinuteQuote.trade_date == trade_date, MinuteQuote.secucode == secucode)
+    )
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        return None
+    mq, name = row
+    pc = float(mq.pre_close) if mq.pre_close is not None else None
+    return {
+        "secucode": mq.secucode, "name": name, "pre_close": pc,
+        "points": stock_series(mq.data or [], pc),
+    }
+
+
+async def list_dates(session) -> list[str]:
+    stmt = select(distinct(MinuteQuote.trade_date)).order_by(MinuteQuote.trade_date.desc())
+    result = await session.execute(stmt)
+    return [d.isoformat() for d in result.scalars().all()]
