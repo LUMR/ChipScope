@@ -26,7 +26,7 @@ export default function MarketOverviewChart({
   const xs = overview.series.map((p) => p.t);
   const avg = overview.series.map((p) => p.avg_pct);
   const mk = (key: CountKey) =>
-    overview.series.map((p) => p[key] as number);
+    overview.series.map((p) => p[key]);
 
   const option = {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },

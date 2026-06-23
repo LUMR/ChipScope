@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.schemas.market import (
-    OverviewOut, RankItemOut, RankingOut, StockMinuteOut,
+    OverviewOut, RankingOut, StockMinuteOut,
 )
 from app.services import market_minute as mm
 
