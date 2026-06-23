@@ -1,8 +1,18 @@
 import { Card, DatePicker, Empty, message, Space, Spin, Typography } from "antd";
 import dayjs, { Dayjs } from "dayjs";
 import { useEffect, useState } from "react";
-import { getMarketDates, getMarketOverview, type Overview } from "../api/market";
+import {
+  getMarketDates,
+  getMarketOverview,
+  getMarketRanking,
+  getStockMinute,
+  type Overview,
+  type Ranking,
+  type StockMinute,
+} from "../api/market";
 import MarketOverviewChart from "../components/MarketOverviewChart";
+import MomentRankingModal from "../components/MomentRankingModal";
+import StockMinuteDrawer from "../components/StockMinuteDrawer";
 
 const { Text, Title } = Typography;
 
@@ -11,6 +21,13 @@ export default function MarketMinutePage() {
   const [date, setDate] = useState<Dayjs | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const [ranking, setRanking] = useState<Ranking | null>(null);
+  const [rankOpen, setRankOpen] = useState(false);
+
+  const [stock, setStock] = useState<StockMinute | null>(null);
+  const [stockOpen, setStockOpen] = useState(false);
+  const [stockLoading, setStockLoading] = useState(false);
 
   useEffect(() => {
     getMarketDates().then((ds) => {
@@ -22,18 +39,34 @@ export default function MarketMinutePage() {
   useEffect(() => {
     if (!date) return;
     setLoading(true);
+    setOverview(null);
     getMarketOverview(date.format("YYYY-MM-DD"))
       .then(setOverview)
-      .catch((e: any) => {
-        const msg = String(e?.message || e);
-        if (msg.includes("404")) {
-          setOverview(null);
-        } else {
-          message.error(msg);
-        }
+      .catch((e: unknown) => {
+        const msg = String((e as Error | undefined)?.message ?? e);
+        if (!msg.includes("404")) message.error(msg);
       })
       .finally(() => setLoading(false));
   }, [date]);
+
+  const pickTime = (t: string) => {
+    if (!date) return;
+    setRankOpen(true);
+    getMarketRanking(date.format("YYYY-MM-DD"), t)
+      .then(setRanking)
+      .catch((e: unknown) => message.error(String((e as Error | undefined)?.message ?? e)));
+  };
+
+  const pickStock = (secucode: string) => {
+    if (!date) return;
+    setStockOpen(true);
+    setStockLoading(true);
+    setStock(null);
+    getStockMinute(date.format("YYYY-MM-DD"), secucode)
+      .then(setStock)
+      .catch((e: unknown) => message.error(String((e as Error | undefined)?.message ?? e)))
+      .finally(() => setStockLoading(false));
+  };
 
   const s = overview?.summary;
 
@@ -66,11 +99,20 @@ export default function MarketMinutePage() {
               <Text type="success">跌停 {s.limit_down}</Text>
             </Space>
           </Card>
-          <Card title="全市场分时走势">
-            <MarketOverviewChart overview={overview} onPickTime={() => {}} />
+          <Card title="全市场分时走势（点击曲线某时刻 → 弹出该时刻榜单）">
+            <MarketOverviewChart overview={overview} onPickTime={pickTime} />
           </Card>
         </>
       )}
+
+      <MomentRankingModal
+        ranking={ranking} open={rankOpen}
+        onClose={() => setRankOpen(false)} onPickStock={pickStock}
+      />
+      <StockMinuteDrawer
+        open={stockOpen} data={stock} loading={stockLoading}
+        onClose={() => setStockOpen(false)}
+      />
     </Space>
   );
 }
