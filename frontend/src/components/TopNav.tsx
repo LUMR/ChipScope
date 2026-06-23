@@ -13,6 +13,8 @@ export default function TopNav() {
     ? "watchlist"
     : loc.pathname.startsWith("/archive")
     ? "archive"
+    : loc.pathname.startsWith("/market")
+    ? "minute"
     : "market";
 
   return (
@@ -23,7 +25,8 @@ export default function TopNav() {
         selectedKeys={[activeKey]}
         style={{ flex: 1, borderBottom: "none" }}
         items={[
-          { key: "market", label: "行情", onClick: () => nav("/") },
+          { key: "market", label: "自选行情", onClick: () => nav("/") },
+          { key: "minute", label: "行情", onClick: () => nav("/market") },
           { key: "watchlist", label: "自选管理", onClick: () => nav("/watchlist") },
           { key: "archive", label: "数据存档", onClick: () => nav("/archive") },
         ]}
