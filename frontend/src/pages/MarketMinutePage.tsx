@@ -2,6 +2,7 @@ import { Card, DatePicker, Empty, message, Space, Spin, Typography } from "antd"
 import dayjs, { Dayjs } from "dayjs";
 import { useEffect, useState } from "react";
 import { getMarketDates, getMarketOverview, type Overview } from "../api/market";
+import MarketOverviewChart from "../components/MarketOverviewChart";
 
 const { Text, Title } = Typography;
 
@@ -66,9 +67,7 @@ export default function MarketMinutePage() {
             </Space>
           </Card>
           <Card title="全市场分时走势">
-            <div style={{ padding: 24, color: "#9ca3af" }}>
-              图表待接入（Task 7）
-            </div>
+            <MarketOverviewChart overview={overview} onPickTime={() => {}} />
           </Card>
         </>
       )}
