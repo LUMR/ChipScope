@@ -42,6 +42,7 @@ from app.services.indicator import (
     rsi_signal,
     score,
     signal_level,
+    evaluate_extras,
 )
 
 
@@ -117,3 +118,31 @@ def test_score_and_levels():
     assert signal_level(0) == "neutral"
     assert signal_level(-2) == "bear"
     assert signal_level(-3) == "strong_bear"
+
+
+def _bull_ind():
+    return {"close": 130, "open": 125, "ma5": 128, "ma10": 126, "ma20": 124,
+            "ma60": 120, "ma20_prev5": 110, "high20_prev": 120, "high60_prev": 122,
+            "vol_ratio": 2.5, "pct5": 8.0, "consecutive_green": 4}
+
+
+def test_evaluate_extras_all_pass():
+    ind = _bull_ind()
+    assert evaluate_extras(ind, [{"type": "ma_bull"}, {"type": "breakout", "n": 20},
+                                 {"type": "volume_up"}]) is True
+
+
+def test_evaluate_extras_breakout_60():
+    ind = _bull_ind()
+    assert evaluate_extras(ind, [{"type": "breakout", "n": 60}]) is True  # 130>122
+
+
+def test_evaluate_extras_volume_up_green_pass_and_fail():
+    ind = _bull_ind()
+    assert evaluate_extras(ind, [{"type": "volume_up_green"}]) is True  # vol_ratio>2 且 close>open
+    ind2 = {**ind, "close": 120, "open": 125}  # 收阴
+    assert evaluate_extras(ind2, [{"type": "volume_up_green"}]) is False
+
+
+def test_evaluate_extras_empty_list_passes():
+    assert evaluate_extras(_bull_ind(), []) is True
