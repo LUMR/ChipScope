@@ -100,6 +100,26 @@ def _consecutive_green(opens: np.ndarray, closes: np.ndarray, i: int) -> int:
     return cnt
 
 
+def indicator_series(bars) -> list[dict]:
+    """每根日K的指标时序（副图用）。复用 _calc_arrays，不重算。
+
+    bars 升序、含当日。返回 list[dict]，每元素包含
+    {date, close, dif, dea, hist, k, d, j, wr, rsi}，
+    长度 == len(bars)。dates 取 KlineBar.date。
+    """
+    a = _calc_arrays(bars)
+    dates = [b.date for b in bars]
+    out = []
+    for i in range(len(a["closes"])):
+        out.append({
+            "date": dates[i], "close": float(a["closes"][i]),
+            "dif": float(a["dif"][i]), "dea": float(a["dea"][i]), "hist": float(a["hist"][i]),
+            "k": float(a["k"][i]), "d": float(a["d"][i]), "j": float(a["j"][i]),
+            "wr": float(a["wr"][i]), "rsi": float(a["rsi"][i]),
+        })
+    return out
+
+
 def compute_indicators(bars) -> dict:
     """最新点指标快照（筛选用）。bars 升序、含当日，建议 >= 60 根。"""
     a = _calc_arrays(bars)
