@@ -19,6 +19,7 @@ from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
+from app.services.kline_archive import archive_daily_klines
 from app.services.kline_chip import ingest_kline_and_chips
 from app.services.minute_archive import archive_minute_quotes
 from app.services.realtime import cache_quote, manager
@@ -173,12 +174,26 @@ async def daily_minute_archive() -> None:
         tdx.close()
 
 
+async def daily_kline_archive() -> None:
+    """16:10 增量回档全市场日K（count=10 取近 10 日，幂等 upsert）。
+
+    与 daily（16:00 holders/flow）和 daily_kline_chip（16:05）错开，
+    独立 TdxClient 连接。全市场范围（不止 watchlist）。
+    """
+    tdx = TdxClient()
+    try:
+        await archive_daily_klines(SessionLocal, tdx, _today_cst(), count=10)
+    finally:
+        tdx.close()
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
     供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
     任务编排一致：实时行情每 3s + 每日 15:30 分时存档 +
-    16:00 采集股东/资金流 + 16:05 增量拉自选股日K/重算筹码。
+    16:00 采集股东/资金流 + 16:05 增量拉自选股日K/重算筹码 +
+    16:10 增量回档全市场日K。
     """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
@@ -187,6 +202,10 @@ def build_scheduler() -> AsyncIOScheduler:
     sched.add_job(
         daily_minute_archive, CronTrigger(hour=15, minute=30),
         id="daily_minute_archive",
+    )
+    sched.add_job(
+        daily_kline_archive, CronTrigger(hour=16, minute=10),
+        id="daily_kline_archive",
     )
     return sched
 

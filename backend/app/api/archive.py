@@ -22,6 +22,13 @@ from app.services.chip_backfill import (
 )
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
+from app.services.kline_archive import (
+    archive_daily_klines,
+    get_daily_kline_archive_status,
+    is_daily_kline_archive_running,
+    set_daily_kline_archive_running,
+    set_daily_kline_archive_status,
+)
 from app.services.minute_archive import (
     _today_cst,
     archive_minute_quotes,
@@ -171,3 +178,61 @@ async def trigger_chip_backfill(days: str = Query(...)):
 @router.get("/chip-backfill/status", response_model=BackfillStatusOut | None)
 async def chip_backfill_status():
     return get_backfill_status()
+
+
+_daily_tasks: set[asyncio.Task] = set()
+
+
+async def _run_daily_kline_archive(count: int) -> None:
+    """后台回档全市场日K：复用一个 TdxClient，全程更新内存状态。异常写 error。"""
+    started = _now_ts()
+    td = _today_cst()
+    td_str = td.strftime("%Y-%m-%d")
+    set_daily_kline_archive_status({
+        "state": "running", "trade_date": td_str,
+        "total": 0, "done": 0, "ok": 0, "failed": 0,
+        "started_at": started, "finished_at": None, "error": None,
+    })
+    tdx = TdxClient()
+    try:
+        def on_progress(done, total, failed):
+            set_daily_kline_archive_status({
+                "state": "running", "trade_date": td_str,
+                "total": total, "done": done, "ok": done - failed, "failed": failed,
+                "started_at": started, "finished_at": None, "error": None,
+            })
+        result = await archive_daily_klines(
+            SessionLocal, tdx, td, count=count, on_progress=on_progress
+        )
+        set_daily_kline_archive_status({
+            "state": "done", "trade_date": result["trade_date"],
+            "total": result["total"], "done": result["total"],
+            "ok": result["ok"], "failed": result["failed"],
+            "started_at": started, "finished_at": _now_ts(), "error": None,
+        })
+    except Exception as e:
+        set_daily_kline_archive_status({
+            "state": "error", "trade_date": td_str,
+            "total": 0, "done": 0, "ok": 0, "failed": 0,
+            "started_at": started, "finished_at": _now_ts(), "error": str(e),
+        })
+    finally:
+        tdx.close()
+        set_daily_kline_archive_running(False)
+
+
+@router.post("/daily", response_model=ArchiveTriggerResponse, status_code=202)
+async def trigger_daily_kline_archive(count: int = Query(250, ge=10, le=1000)):
+    if is_daily_kline_archive_running():
+        raise HTTPException(status_code=409, detail="daily kline archive already running")
+    set_daily_kline_archive_running(True)
+    task = asyncio.create_task(_run_daily_kline_archive(count))
+    _daily_tasks.add(task)
+    task.add_done_callback(_daily_tasks.discard)
+    trade_date = _today_cst().strftime("%Y-%m-%d")
+    return ArchiveTriggerResponse(task_id=str(_now_ts()), trade_date=trade_date)
+
+
+@router.get("/daily/status", response_model=ArchiveStatusOut | None)
+async def daily_kline_archive_status():
+    return get_daily_kline_archive_status()

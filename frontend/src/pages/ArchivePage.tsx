@@ -5,8 +5,10 @@ import type { ArchiveStatus, BackfillStatus } from "../api/archive";
 import {
   getArchiveStatus,
   getChipBackfillStatus,
+  getDailyKlineArchiveStatus,
   triggerArchive,
   triggerChipBackfill,
+  triggerDailyKlineArchive,
 } from "../api/archive";
 
 const { Text } = Typography;
@@ -19,6 +21,10 @@ export default function ArchivePage() {
   const [backfillStatus, setBackfillStatus] = useState<BackfillStatus | null>(null);
   const [daysWindow, setDaysWindow] = useState<string>("365");
   const [backfillLoading, setBackfillLoading] = useState(false);
+
+  const [klineStatus, setKlineStatus] = useState<ArchiveStatus | null>(null);
+  const [klineCount, setKlineCount] = useState<number>(250);
+  const [klineLoading, setKlineLoading] = useState(false);
 
   // 分时存档：首次加载 + 运行中轮询
   useEffect(() => {
@@ -39,6 +45,19 @@ export default function ArchivePage() {
     const timer = setInterval(async () => {
       try {
         setBackfillStatus(await getChipBackfillStatus());
+      } catch {
+        /* ignore */
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 日K回档：首次加载 + 运行中轮询
+  useEffect(() => {
+    getDailyKlineArchiveStatus().then(setKlineStatus);
+    const timer = setInterval(async () => {
+      try {
+        setKlineStatus(await getDailyKlineArchiveStatus());
       } catch {
         /* ignore */
       }
@@ -81,6 +100,23 @@ export default function ArchivePage() {
     }
   };
 
+  const triggerKline = async () => {
+    setKlineLoading(true);
+    try {
+      await triggerDailyKlineArchive(klineCount);
+      message.success("已开始回档，请关注进度");
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg.includes("409")) {
+        message.warning("已有回档任务在运行");
+      } else {
+        message.error(msg);
+      }
+    } finally {
+      setKlineLoading(false);
+    }
+  };
+
   const running = status?.state === "running";
   const pct =
     status && status.total > 0
@@ -91,6 +127,12 @@ export default function ArchivePage() {
   const backfillPct =
     backfillStatus && backfillStatus.total > 0
       ? Math.round((backfillStatus.done / backfillStatus.total) * 100)
+      : 0;
+
+  const klineRunning = klineStatus?.state === "running";
+  const klinePct =
+    klineStatus && klineStatus.total > 0
+      ? Math.round((klineStatus.done / klineStatus.total) * 100)
       : 0;
 
   return (
@@ -180,6 +222,58 @@ export default function ArchivePage() {
                 <Text type="danger">失败 {backfillStatus.failed}</Text>
               </Space>
               {backfillStatus.error && <Text type="danger">错误：{backfillStatus.error}</Text>}
+            </div>
+          )}
+        </Space>
+      </Card>
+
+      <Card title="日K回档">
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <div>
+            <Text type="secondary">
+              回档全市场日K（默认 250 根，每日 16:10 增量）。覆盖全部沪深 A 股，
+              幂等 upsert，可作为选股/指标计算的数据底座。
+            </Text>
+          </div>
+          <Space>
+            <Select
+              value={String(klineCount)}
+              onChange={(v) => setKlineCount(Number(v))}
+              style={{ width: 140 }}
+              options={[
+                { value: "120", label: "最近 120 根" },
+                { value: "250", label: "最近 250 根" },
+                { value: "500", label: "最近 500 根" },
+                { value: "1000", label: "最近 1000 根" },
+              ]}
+            />
+            <Button
+              type="primary"
+              loading={klineLoading}
+              onClick={triggerKline}
+              disabled={klineRunning}
+            >
+              {klineRunning ? "回档中…" : "开始回档"}
+            </Button>
+          </Space>
+          {klineStatus && klineStatus.state && (
+            <div>
+              <Space>
+                <Tag color={klineStatus.state === "done" ? "green" : klineStatus.state === "error" ? "red" : "blue"}>
+                  {klineStatus.state}
+                </Tag>
+                <Text>交易日：{klineStatus.trade_date ?? "-"}</Text>
+              </Space>
+              <Progress
+                percent={klinePct}
+                status={klineStatus.state === "error" ? "exception" : klineRunning ? "active" : "normal"}
+              />
+              <Space size="large">
+                <Text>总计 {klineStatus.total}</Text>
+                <Text type="success">成功 {klineStatus.ok}</Text>
+                <Text type="danger">失败 {klineStatus.failed}</Text>
+              </Space>
+              {klineStatus.error && <Text type="danger">错误：{klineStatus.error}</Text>}
             </div>
           )}
         </Space>

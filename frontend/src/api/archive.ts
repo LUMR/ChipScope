@@ -39,3 +39,11 @@ export const triggerChipBackfill = (days: string) =>
 
 export const getChipBackfillStatus = () =>
   apiGet<BackfillStatus | null>("/archive/chip-backfill/status");
+
+export const triggerDailyKlineArchive = (count = 250) =>
+  apiPost<{ task_id: string; trade_date: string }>(
+    `/archive/daily?count=${count}`
+  );
+
+export const getDailyKlineArchiveStatus = () =>
+  apiGet<ArchiveStatus | null>("/archive/daily/status");
