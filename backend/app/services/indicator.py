@@ -125,3 +125,51 @@ def compute_indicators(bars) -> dict:
         "pct5": float((closes[i] / closes[i - 5] - 1) * 100) if i >= 5 else 0.0,
         "consecutive_green": _consecutive_green(a["opens"], closes, i),
     }
+
+
+def macd_signal(ind: dict) -> int:
+    if ind["dif"] > ind["dea"] and ind["dif"] > 0:
+        return 1
+    if ind["dif"] < ind["dea"] and ind["dif"] < 0:
+        return -1
+    return 0
+
+
+def kdj_signal(ind: dict) -> int:
+    if (ind["k"] > ind["d"] and ind["j"] < 50) or ind["j"] < 20:
+        return 1
+    if ind["k"] < ind["d"] and ind["j"] > 80:
+        return -1
+    return 0
+
+
+def wr_signal(ind: dict) -> int:
+    if ind["wr"] > 80:
+        return 1
+    if ind["wr"] < 20:
+        return -1
+    return 0
+
+
+def rsi_signal(ind: dict) -> int:
+    if ind["rsi"] < 30 or (ind["rsi"] >= 50 and ind["prev_rsi"] < 50):
+        return 1
+    if ind["rsi"] > 70:
+        return -1
+    return 0
+
+
+def score(ind: dict) -> int:
+    return macd_signal(ind) + kdj_signal(ind) + wr_signal(ind) + rsi_signal(ind)
+
+
+def signal_level(s: int) -> str:
+    if s >= 3:
+        return "strong_bull"
+    if s >= 1:
+        return "bull"
+    if s == 0:
+        return "neutral"
+    if s >= -2:
+        return "bear"
+    return "strong_bear"

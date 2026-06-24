@@ -34,7 +34,15 @@ def test_hhv_llv_window_inclusive():
 
 
 from app.services.collector.types import KlineBar
-from app.services.indicator import compute_indicators
+from app.services.indicator import (
+    compute_indicators,
+    macd_signal,
+    kdj_signal,
+    wr_signal,
+    rsi_signal,
+    score,
+    signal_level,
+)
 
 
 def _bar(c, o=None, h=None, low=None, vol=1000):
@@ -73,3 +81,39 @@ def test_compute_indicators_breakout_high20_prev():
     bars = [_bar(100) for _ in range(20)] + [_bar(120) for _ in range(20)] + [_bar(130)]
     ind = compute_indicators(bars)
     assert ind["close"] > ind["high20_prev"]
+
+
+def test_macd_signal_bull_and_bear():
+    assert macd_signal({"dif": 1.0, "dea": 0.5}) == 1     # dif>dea 且 dif>0
+    assert macd_signal({"dif": -1.0, "dea": -0.5}) == -1  # dif<dea 且 dif<0
+    assert macd_signal({"dif": 1.0, "dea": 2.0}) == 0     # dif>0 但 dif<dea
+
+
+def test_kdj_signal_low_golden_cross_and_overbought():
+    assert kdj_signal({"k": 30, "d": 20, "j": 40}) == 1   # k>d 且 j<50
+    assert kdj_signal({"k": 20, "d": 30, "j": 85}) == -1  # k<d 且 j>80
+    assert kdj_signal({"k": 60, "d": 50, "j": 70}) == 0
+
+
+def test_wr_signal_oversold_overbought():
+    assert wr_signal({"wr": 85}) == 1
+    assert wr_signal({"wr": 15}) == -1
+    assert wr_signal({"wr": 50}) == 0
+
+
+def test_rsi_signal_oversold_and_cross_up():
+    assert rsi_signal({"rsi": 25, "prev_rsi": 25}) == 1   # 超卖
+    assert rsi_signal({"rsi": 52, "prev_rsi": 49}) == 1   # 上穿 50
+    assert rsi_signal({"rsi": 75, "prev_rsi": 75}) == -1  # 超买
+    assert rsi_signal({"rsi": 55, "prev_rsi": 55}) == 0
+
+
+def test_score_and_levels():
+    ind = {"dif": 1, "dea": 0.5, "k": 30, "d": 20, "j": 40,
+           "wr": 85, "rsi": 25, "prev_rsi": 25}
+    assert score(ind) == 4
+    assert signal_level(4) == "strong_bull"
+    assert signal_level(2) == "bull"
+    assert signal_level(0) == "neutral"
+    assert signal_level(-2) == "bear"
+    assert signal_level(-3) == "strong_bear"
