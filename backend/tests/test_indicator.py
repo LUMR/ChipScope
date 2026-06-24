@@ -31,3 +31,45 @@ def test_hhv_llv_window_inclusive():
     l = llv([1.0, 5.0, 3.0, 2.0], 2)
     assert_array_almost_equal(h[2:], [5.0, 3.0])  # i=2:max(5,3)=5; i=3:max(3,2)=3
     assert_array_almost_equal(l[2:], [3.0, 2.0])
+
+
+from app.services.collector.types import KlineBar
+from app.services.indicator import compute_indicators
+
+
+def _bar(c, o=None, h=None, low=None, vol=1000):
+    o = o if o is not None else c
+    h = h if h is not None else c * 1.01
+    low = low if low is not None else c * 0.99
+    return KlineBar("2026-01-01", o, c, h, low, vol, c * vol * 100, 0.0, 0.0, c)
+
+
+def test_compute_indicators_fields_and_dif_sign():
+    # 持续上涨 60 根 → DIF>0（短期 EMA > 长期 EMA）
+    bars = [_bar(100 + i) for i in range(60)]
+    ind = compute_indicators(bars)
+    assert set(ind) >= {"dif", "dea", "hist", "k", "d", "j", "wr", "rsi",
+                        "prev_rsi", "ma5", "ma20", "vol_ratio", "close",
+                        "high20_prev", "high60_prev", "pct5", "consecutive_green"}
+    assert ind["dif"] > 0
+
+
+def test_compute_indicators_kdj_j_below_20_on_crash():
+    # 持续下跌 → RSV≈0 → K/D/J 极低，J<20
+    bars = [_bar(200 - i) for i in range(60)]
+    ind = compute_indicators(bars)
+    assert ind["j"] < 20
+
+
+def test_compute_indicators_wr_near_100_on_crash():
+    bars = [_bar(200 - i) for i in range(60)]
+    ind = compute_indicators(bars)
+    # 收盘接近区间最低 → WR 接近 100（超卖）
+    assert ind["wr"] > 80
+
+
+def test_compute_indicators_breakout_high20_prev():
+    # 前 20 根高点 120，今日 130 突破
+    bars = [_bar(100) for _ in range(20)] + [_bar(120) for _ in range(20)] + [_bar(130)]
+    ind = compute_indicators(bars)
+    assert ind["close"] > ind["high20_prev"]
