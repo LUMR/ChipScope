@@ -7,12 +7,24 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models.minute_quote import MinuteQuote
 from app.services.collector.tdx_client import TdxClient
-from app.services.collector.types import StockInfo
+from app.services.collector.types import KlineBar, StockInfo
 from app.services.ingest import upsert_stock_meta
 
 # A 股 code 前缀
 _SH_PREFIXES = {"600", "601", "603", "605", "688", "689"}
 _SZ_PREFIXES = {"000", "001", "002", "003", "300", "301"}
+
+
+def prev_close_from_bars(bars: list[KlineBar], trade_date_iso: str) -> float | None:
+    """日K中 < trade_date_iso 的最近一根 close = 目标日前一交易日收盘（即前收）。
+
+    取 date 最大者，不依赖 bars 顺序；无候选返回 None。用于历史日分时存档的前收盘价
+    （stocks() 只给今天的昨收，历史日须用日K推算）。
+    """
+    prev = [b for b in bars if b.date < trade_date_iso]
+    if not prev:
+        return None
+    return max(prev, key=lambda b: b.date).close
 
 
 def _filter_a_shares(df, market: int) -> list[StockInfo]:
@@ -122,13 +134,17 @@ async def archive_minute_quotes(
     failed = 0
     today = _today_cst()
     date_arg = None if trade_date == today else trade_date.strftime("%Y%m%d")
+    trade_iso = trade_date.isoformat()
     for i, s in enumerate(stocks, 1):
         try:
             points = await tdx.minute_time(s.code, date_arg)
             if points:
+                # pre_close 统一用日K前一交易日收盘：stocks() 的昨收对除权/陈旧股不可靠
+                bars = await tdx.daily_bars(s.code, count=120)
+                pre_close = prev_close_from_bars(bars, trade_iso)
                 async with session_factory() as session:
                     await upsert_minute_quote(
-                        session, trade_date, s.secucode, points, s.pre_close
+                        session, trade_date, s.secucode, points, pre_close
                     )
                 ok += 1
             else:

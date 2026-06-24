@@ -9,6 +9,7 @@ import numpy as np
 from app.services.collector.tdx_client import _row_to_time as _index_to_time
 
 _GEM_PREFIXES = {"300", "301", "688", "689"}  # 创业板/科创板 20%
+_MAX_PRECLOSE_RATIO = 1.5  # 前收/现价上限；A 股最大跌停 -20%(ratio 1.25)，超过 1.5(跌幅>33%) 视为异常（除权/停牌补跌/退市脏 pre_close），不计入
 
 
 def limit_pct(code: str) -> float:
@@ -49,11 +50,16 @@ def aggregate(rows: list[dict]) -> dict:
     pct_rows, limits = [], []
     for r in rows:
         pc = r.get("pre_close")
+        pts = r.get("points") or []
         if not pc or pc <= 0:
+            continue
+        # 剔除退市/停牌股 stocks() 返回的脏 pre_close（前收远超当日实际成交价）
+        day_prices = [p["price"] for p in pts if p.get("price")]
+        if day_prices and pc / max(day_prices) > _MAX_PRECLOSE_RATIO:
             continue
         code = _code_of(r)
         arr = np.full(_N_POINTS, np.nan)
-        for p in r.get("points") or []:
+        for p in pts:
             i = _time_to_index(p["t"])
             if i is not None:
                 arr[i] = (float(p["price"]) / float(pc) - 1) * 100
@@ -112,6 +118,9 @@ def ranking_at(rows: list[dict], time_index: int, n: int = 30) -> dict:
         if not pc or pc <= 0 or time_index >= len(pts):
             continue
         price = float(pts[time_index]["price"])
+        # 剔除退市/停牌股脏 pre_close（前收远超现价）
+        if price > 0 and pc / price > _MAX_PRECLOSE_RATIO:
+            continue
         pct = (price / float(pc) - 1) * 100
         items.append({
             "secucode": r["secucode"], "name": r.get("name") or r["secucode"],

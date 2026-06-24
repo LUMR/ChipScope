@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.services.collector.types import KlineBar
 
@@ -86,15 +87,15 @@ class TdxClient:
     async def minute_time(self, symbol: str, date: str | None = None) -> list[dict]:
         """mootdx 分时 → [{t, price, vol}, ...]（240 个分钟点）。
 
-        date=None 取当天（client.minute）；date='YYYYMMDD' 取历史日（client.minutes）。
+        统一走历史分时接口 client.minutes(date)：实时接口 client.minute() 收盘后返回的
+        price 解析异常（从 0 累加出乱码，如 600519 → 0.01..102 而非 1200+），故当天也用
+        minutes(date=today)。date=None 取当天；date='YYYYMMDD' 取历史日。
         """
         loop = asyncio.get_running_loop()
-        if date is None:
-            df = await loop.run_in_executor(self._executor, self._client.minute, symbol)
-        else:
-            df = await loop.run_in_executor(
-                self._executor, lambda: self._client.minutes(symbol=symbol, date=date)
-            )
+        date_arg = date or datetime.now().strftime("%Y%m%d")
+        df = await loop.run_in_executor(
+            self._executor, lambda: self._client.minutes(symbol=symbol, date=date_arg)
+        )
         return _parse_minute_df(df)
 
     async def stocks(self, market: int):

@@ -86,6 +86,30 @@ def test_ranking_at_skips_missing_pre_close():
     assert len(out["gainers"]) == 1 and out["gainers"][0]["secucode"] == "000001.SZ"
 
 
+def test_ranking_at_skips_dirty_pre_close():
+    """退市股 stocks() 返回的脏 pre_close（远超现价）不进榜单；新股真实大涨保留。"""
+    rows = [
+        _row("600519.SH", 100.0, [110.0]),       # +10 正常
+        _row("600421.SH", 119808.0, [0.20]),      # 脏 pre_close，剔除
+        _row("688797.SH", 232.06, [585.0]),       # 新股 ratio 0.4，保留
+    ]
+    out = ranking_at(rows, time_index=0)
+    codes = [g["secucode"] for g in out["gainers"]] + [l["secucode"] for l in out["losers"]]
+    assert "600421.SH" not in codes
+    assert "688797.SH" in codes
+
+
+def test_aggregate_skips_dirty_pre_close():
+    """退市股脏 pre_close 不污染均值与计数。"""
+    rows = [
+        _row("600519.SH", 100.0, [110.0, 110.0]),    # +10
+        _row("600421.SH", 119808.0, [0.20, 0.20]),    # 脏 pre_close，剔除
+    ]
+    out = aggregate(rows)
+    assert out["summary"]["with_pre_close"] == 1
+    assert round(out["series"][0]["avg_pct"], 2) == 10.0
+
+
 def test_stock_series_with_and_without_pre_close():
     pts = [{"t": "09:31", "price": 105.0, "vol": 100}, {"t": "09:32", "price": 110.0, "vol": 200}]
     s1 = stock_series(pts, 100.0)

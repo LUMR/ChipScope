@@ -127,6 +127,13 @@ class _FakeArchiveTdx:
             raise RuntimeError("boom")
         return [{"t": "09:31", "price": 10.0, "vol": 100}]
 
+    async def daily_bars(self, symbol: str, count: int = 200, float_shares: float = 0.0):
+        from app.services.collector.types import KlineBar
+        pc = {"600519": 1700.0, "000001": 12.5}.get(symbol, 100.0)
+        # 目标日 2026-06-22 的前一交易日 = 2026-06-19
+        return [KlineBar("2026-06-18", pc, pc, pc, pc, 1000, 1e8, 0.0, 0.0, pc),
+                KlineBar("2026-06-19", pc, pc, pc, pc, 1000, 1e8, 0.0, 0.0, pc)]
+
 
 @pytest.mark.asyncio
 async def test_archive_minute_quotes_main_flow(db_session):
@@ -173,6 +180,38 @@ async def test_archive_minute_quotes_main_flow(db_session):
     pq_rows = (await db_session.execute(
         select(MinuteQuote.secucode, MinuteQuote.pre_close).order_by(MinuteQuote.secucode)
     )).all()
-    assert {r[0]: float(r[1]) for r in pq_rows} == {"000001.SZ": 12.3, "600519.SH": 1685.0}
+    # 历史日 pre_close 由日K推算（目标日 2026-06-22 前一交易日 2026-06-19 收盘），
+    # 而非 stocks() 的 today 昨收
+    assert {r[0]: float(r[1]) for r in pq_rows} == {"000001.SZ": 12.5, "600519.SH": 1700.0}
 
     await _engine.dispose()
+
+
+def test_prev_close_from_bars_picks_latest_before_target():
+    from app.services.minute_archive import prev_close_from_bars
+    from app.services.collector.types import KlineBar
+    bars = [
+        KlineBar("2026-06-18", 0, 1685, 0, 0, 0, 0, 0, 0, 0),
+        KlineBar("2026-06-19", 0, 1700, 0, 0, 0, 0, 0, 0, 0),
+        KlineBar("2026-06-22", 0, 1710, 0, 0, 0, 0, 0, 0, 0),  # 目标日本身，排除
+    ]
+    assert prev_close_from_bars(bars, "2026-06-22") == 1700.0
+
+
+def test_prev_close_from_bars_unordered_takes_max_date():
+    from app.services.minute_archive import prev_close_from_bars
+    from app.services.collector.types import KlineBar
+    bars = [
+        KlineBar("2026-06-22", 0, 1710, 0, 0, 0, 0, 0, 0, 0),
+        KlineBar("2026-06-18", 0, 1685, 0, 0, 0, 0, 0, 0, 0),
+        KlineBar("2026-06-19", 0, 1700, 0, 0, 0, 0, 0, 0, 0),
+    ]
+    assert prev_close_from_bars(bars, "2026-06-22") == 1700.0
+
+
+def test_prev_close_from_bars_none_when_no_candidate():
+    from app.services.minute_archive import prev_close_from_bars
+    from app.services.collector.types import KlineBar
+    assert prev_close_from_bars([], "2026-06-22") is None
+    bars = [KlineBar("2026-06-25", 0, 1710, 0, 0, 0, 0, 0, 0, 0)]  # 均 >= 目标日
+    assert prev_close_from_bars(bars, "2026-06-22") is None
