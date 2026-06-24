@@ -23,10 +23,10 @@ def ema(x, n: int) -> np.ndarray:
 def sma(x, n: int) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     out = np.full_like(x, np.nan)
-    if len(x) < n:
+    if n < 1 or len(x) < n:
         return out
-    c = np.cumsum(x)
-    out[n:] = (c[n:] - c[:-n]) / n
+    c = np.concatenate(([0.0], np.cumsum(x)))  # c[k] = sum(x[0..k-1])
+    out[n - 1:] = (c[n:] - c[:-n]) / n
     return out
 
 

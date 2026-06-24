@@ -12,9 +12,12 @@ def test_ema_seed_and_recurrence():
 
 def test_sma_simple_window():
     out = sma([1.0, 2.0, 3.0, 4.0], 2)
-    # 前 n-1 个 nan；sma[2]=(2+3)/2=2.5; sma[3]=(3+4)/2=3.5
-    assert np.isnan(out[0]) and np.isnan(out[1])
-    assert_array_almost_equal(out[2:], [2.5, 3.5])
+    assert np.isnan(out[0])
+    assert_array_almost_equal(out[1:], [1.5, 2.5, 3.5])
+
+
+def test_sma_n1_is_identity():
+    assert_array_almost_equal(sma([1.0, 2.0, 3.0], 1), [1.0, 2.0, 3.0])
 
 
 def test_sma_tdx_recurrence():
