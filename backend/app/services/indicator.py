@@ -195,6 +195,16 @@ def signal_level(s: int) -> str:
     return "strong_bear"
 
 
+def _opt(e: dict, key: str, default):
+    """取 extras 字段；None（Pydantic model_dump 默认值）视作缺省返回 default。
+
+    dict.get(key, default) 在 key 存在但值为 None 时返回 None 而非 default，
+    会引发 ind["vol_ratio"] > None 之类 TypeError，故显式判 None。
+    """
+    v = e.get(key)
+    return v if v is not None else default
+
+
 def evaluate_extras(ind: dict, extras: list[dict]) -> bool:
     """辅助条件 AND 组合，全满足返回 True。"""
     for e in extras or []:
@@ -203,29 +213,29 @@ def evaluate_extras(ind: dict, extras: list[dict]) -> bool:
             if not (ind["ma5"] > ind["ma10"] > ind["ma20"] > ind["ma60"]):
                 return False
         elif t == "above_ma":
-            n = e.get("n", 20)
+            n = _opt(e, "n", 20)
             if not (ind["close"] > ind[f"ma{n}"]):
                 return False
         elif t == "ma_up":
             if not (ind["ma20"] > ind["ma20_prev5"]):
                 return False
         elif t == "breakout":
-            ref = ind["high20_prev"] if e.get("n", 20) == 20 else ind["high60_prev"]
+            ref = ind["high20_prev"] if _opt(e, "n", 20) == 20 else ind["high60_prev"]
             if not (ind["close"] > ref):
                 return False
         elif t == "new_high":
             if not (ind["close"] >= ind["high60_prev"] * 0.98):
                 return False
         elif t == "volume_up":
-            if not (ind["vol_ratio"] > e.get("k", 2.0)):
+            if not (ind["vol_ratio"] > _opt(e, "k", 2.0)):
                 return False
         elif t == "volume_up_green":
-            if not (ind["vol_ratio"] > e.get("k", 2.0) and ind["close"] > ind["open"]):
+            if not (ind["vol_ratio"] > _opt(e, "k", 2.0) and ind["close"] > ind["open"]):
                 return False
         elif t == "pct_range":
-            if not (e.get("lo", 3) <= ind["pct5"] <= e.get("hi", 15)):
+            if not (_opt(e, "lo", 3) <= ind["pct5"] <= _opt(e, "hi", 15)):
                 return False
         elif t == "consecutive_green":
-            if not (ind["consecutive_green"] >= e.get("k", 3)):
+            if not (ind["consecutive_green"] >= _opt(e, "k", 3)):
                 return False
     return True

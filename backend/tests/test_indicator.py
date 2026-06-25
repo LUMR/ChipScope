@@ -146,3 +146,17 @@ def test_evaluate_extras_volume_up_green_pass_and_fail():
 
 def test_evaluate_extras_empty_list_passes():
     assert evaluate_extras(_bull_ind(), []) is True
+
+
+def test_evaluate_extras_none_fields_use_defaults():
+    # Pydantic model_dump() 会把默认 None 字段塞进 dict（如 {"type":"volume_up","k":None,...}）。
+    # dict.get(key, default) 在 key 存在但值为 None 时返回 None 而非 default，
+    # 会导致 ind["vol_ratio"] > None 之类 TypeError。evaluate_extras 必须把 None 当缺省。
+    # 复现：前端勾「放量」发 {type:volume_up}（无 k）→ screener model_dump → k=None → 报错。
+    ind = _bull_ind()
+    assert evaluate_extras(ind, [{"type": "volume_up", "k": None}]) is True          # k=None→2.0; 2.5>2.0
+    assert evaluate_extras(ind, [{"type": "volume_up_green", "k": None}]) is True    # k=None→2.0
+    assert evaluate_extras(ind, [{"type": "pct_range", "lo": None, "hi": None}]) is True  # →3..15; 8.0 在内
+    assert evaluate_extras(ind, [{"type": "consecutive_green", "k": None}]) is True  # k=None→3; 4>=3
+    assert evaluate_extras(ind, [{"type": "above_ma", "n": None}]) is True           # n=None→20; 130>ma20 124
+    assert evaluate_extras(ind, [{"type": "breakout", "n": None}]) is True           # n=None→20→high20_prev; 130>120
