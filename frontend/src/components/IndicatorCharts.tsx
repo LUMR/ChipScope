@@ -56,7 +56,7 @@ export default function IndicatorCharts({ secucode }: { secucode: string }) {
   if (!pts.length) return null;
 
   const xs = pts.map((p) => p.date);
-  const line = (key: keyof Pt, color: string) => ({
+  const line = (key: keyof Omit<Pt, "date">, color: string) => ({
     name: key.toString().toUpperCase(),
     type: "line" as const,
     data: pts.map((p) => p[key] as number),

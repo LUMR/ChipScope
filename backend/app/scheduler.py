@@ -19,7 +19,10 @@ from app.models.watchlist import Watchlist
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
-from app.services.kline_archive import archive_daily_klines
+from app.services.kline_archive import (
+    archive_daily_klines,
+    is_daily_kline_archive_running,
+)
 from app.services.kline_chip import ingest_kline_and_chips
 from app.services.minute_archive import archive_minute_quotes
 from app.services.realtime import cache_quote, manager
@@ -179,7 +182,13 @@ async def daily_kline_archive() -> None:
 
     与 daily（16:00 holders/flow）和 daily_kline_chip（16:05）错开，
     独立 TdxClient 连接。全市场范围（不止 watchlist）。
+
+    与手动触发端点 POST /api/archive/daily 共享 is_daily_kline_archive_running
+    互斥 flag，避免二者并发开两个 TdxClient（IP 限流风险）。
     """
+    if is_daily_kline_archive_running():
+        print("[daily_kline_archive] 已有手动触发的存档任务在跑，跳过本次 cron")
+        return
     tdx = TdxClient()
     try:
         await archive_daily_klines(SessionLocal, tdx, _today_cst(), count=10)

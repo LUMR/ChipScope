@@ -60,7 +60,7 @@ export default function ScreenerPage() {
       title: "代码",
       dataIndex: "secucode",
       render: (v: string) => (
-        <a onClick={() => nav(`/stock/${v}`)}>{v}</a>
+        <a href={`/stock/${v}`} onClick={(e) => { e.preventDefault(); nav(`/stock/${v}`); }}>{v}</a>
       ),
     },
     { title: "名称", dataIndex: "name" },
