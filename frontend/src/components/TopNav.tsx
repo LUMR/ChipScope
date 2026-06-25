@@ -15,6 +15,8 @@ export default function TopNav() {
     ? "archive"
     : loc.pathname.startsWith("/market")
     ? "minute"
+    : loc.pathname.startsWith("/screener")
+    ? "screener"
     : "market";
 
   return (
@@ -27,6 +29,7 @@ export default function TopNav() {
         items={[
           { key: "market", label: "自选行情", onClick: () => nav("/") },
           { key: "minute", label: "行情", onClick: () => nav("/market") },
+          { key: "screener", label: "选股", onClick: () => nav("/screener") },
           { key: "watchlist", label: "自选管理", onClick: () => nav("/watchlist") },
           { key: "archive", label: "数据存档", onClick: () => nav("/archive") },
         ]}
