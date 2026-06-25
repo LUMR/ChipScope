@@ -3,6 +3,7 @@ import { Alert, Spin } from "antd";
 import { useParams } from "react-router-dom";
 import ChipFlame from "../components/ChipFlame";
 import DateSlider from "../components/DateSlider";
+import IndicatorCharts from "../components/IndicatorCharts";
 import KLineChart from "../components/KLineChart";
 import MetricPanel from "../components/MetricPanel";
 import { getChips } from "../api/stocks";
@@ -48,6 +49,7 @@ export default function StockDetail() {
   return (
     <>
       <KLineChart bars={kline} />
+      <IndicatorCharts secucode={secucode} />
       <DateSlider dates={dates} value={dateIdx} onChange={setDateIdx} />
       <ChipFlame chip={chip} />
       <div style={{ marginTop: 16 }}>
