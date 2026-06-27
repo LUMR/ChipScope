@@ -15,6 +15,7 @@ import app.models.flow  # noqa: F401
 import app.models.chip  # noqa: F401
 import app.models.watchlist  # noqa: F401
 import app.models.minute_quote  # noqa: F401
+import app.models.stock_metric  # noqa: F401  注册模型
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

@@ -24,10 +24,11 @@ import app.models.flow  # noqa: F401
 import app.models.chip  # noqa: F401
 import app.models.watchlist  # noqa: F401
 import app.models.minute_quote  # noqa: F401
+import app.models.stock_metric  # noqa: F401
 
 _TRUNCATE_TABLES = (
     "stock_meta, daily_kline, top_holders, holder_summary, money_flow, "
-    "chip_distribution, watchlist, minute_quote"
+    "chip_distribution, watchlist, minute_quote, stock_metric"
 )
 
 

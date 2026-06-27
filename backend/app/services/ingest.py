@@ -5,6 +5,7 @@ from app.models.flow import MoneyFlow
 from app.models.holder import HolderSummary, TopHolder
 from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.models.stock_metric import StockMetric
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.types import KlineBar, StockInfo
 from app.utils.time import trading_day_ts
@@ -110,6 +111,22 @@ async def upsert_money_flow(session: AsyncSession, secucode: str, klines: list[s
     first = rows[0]
     update_cols = {c: stmt.excluded[c] for c in first if c not in ("secucode", "ts")}
     stmt = stmt.on_conflict_do_update(index_elements=[MoneyFlow.secucode, MoneyFlow.ts], set_=update_cols)
+    await session.execute(stmt)
+    await session.commit()
+    return len(rows)
+
+
+async def upsert_stock_metric(session, rows: list[dict]) -> int:
+    """upsert 指标物化行。rows 每元素须含 trade_date/secucode + 全指标字段。
+    ON CONFLICT (trade_date, secucode) DO UPDATE，幂等。"""
+    if not rows:
+        return 0
+    stmt = insert(StockMetric).values(rows)
+    first = rows[0]
+    update_cols = {c: stmt.excluded[c] for c in first if c not in ("trade_date", "secucode")}
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[StockMetric.trade_date, StockMetric.secucode], set_=update_cols
+    )
     await session.execute(stmt)
     await session.commit()
     return len(rows)
