@@ -162,35 +162,33 @@ async def test_get_flow(api_client):
 
 @pytest_asyncio.fixture
 async def indicators_client():
-    """Task 8: 自包含 client——独立 engine + dependency_overrides[get_db] + 60 根日K。
+    """Task 5: 自包含 client——独立 engine + dependency_overrides[get_db]。
 
     不复用 conftest.db_session：ASGI app 默认 get_db 走模块级 SessionLocal（连测试库
     但跨 event loop 复用连接，Windows ProactorEventLoop 下报 "Event loop is closed"）。
     仿 test_api_watchlist::watchlist_client / test_api_screener 用 override 注入测试 session。
+
+    仅 seed 两只 StockMeta 父记录（600519.SH 供指标用例 + 000001.SZ 供 404 用例）；
+    yield (client, SessionLocal)，各用例自行 seed stock_metric 或 daily_kline。
     """
-    from datetime import date, timedelta
+    from app.models.base import Base
 
     engine = create_async_engine(get_settings().database_url)
     SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"
+            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, "
+            "stock_metric CASCADE"
         ))
-
-    dates_in = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(60)]
     async with SessionLocal() as s:
         s.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
                         market="SH", secid="1.600519"))
-        # 另一只无 K线的股票，用于 404 用例
         s.add(StockMeta(secucode="000001.SZ", code="000001", name="平安银行",
                         market="SZ", secid="0.000001"))
-        await s.commit()
-        # trading_day_ts 归一化到 15:30 CST（与采集一致），保证读回 ts.date() 与写入日期一致。
-        for i, ds in enumerate(dates_in):
-            s.add(DailyKline(ts=trading_day_ts(ds), secucode="600519.SH",
-                             open=100, close=100 + i, high=101 + i, low=99, volume=1000,
-                             amount=1e7, turnover_rate=0, pct_change=1.0, vwap=100))
         await s.commit()
 
     async def override_get_db():
@@ -203,20 +201,39 @@ async def indicators_client():
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, dates_in
+        yield client, SessionLocal
 
     app.dependency_overrides.clear()
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"
+            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, "
+            "stock_metric CASCADE"
         ))
     await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_stock_indicators_series(indicators_client):
-    """GET /{secucode}/indicators：每根日K返回 dif/dea/hist/k/d/j/wr/rsi/close 时序。"""
-    client, dates_in = indicators_client
+async def test_stock_indicators_from_metric(indicators_client):
+    """GET /{secucode}/indicators：优先查 stock_metric 时序（>= count 行）。"""
+    from datetime import date, timedelta
+
+    from app.models.stock_metric import StockMetric
+
+    client, SessionLocal = indicators_client
+    # seed 60 行 stock_metric（valid 日期：2026-01-01 起 60 天）
+    async with SessionLocal() as s:
+        for i in range(60):
+            s.add(StockMetric(
+                trade_date=date(2026, 1, 1) + timedelta(days=i), secucode="600519.SH",
+                close=100 + i, open=100 + i, dif=1.0, dea=0.5, hist=1.0,
+                k=50.0, d=48.0, j=54.0, wr=60.0, rsi=55.0, prev_rsi=52.0,
+                ma5=100.0, ma10=100.0, ma20=100.0, ma60=100.0, ma20_prev5=100.0,
+                high20_prev=100.0, high60_prev=100.0, vol_ratio=1.0, pct5=1.0,
+                consecutive_green=1, pct_change=1.0,
+                score=2, signal_level="bull",
+                macd_signal=1, kdj_signal=1, wr_signal=0, rsi_signal=0,
+            ))
+        await s.commit()
     r = await client.get("/api/stocks/600519.SH/indicators?count=60")
     assert r.status_code == 200
     data = r.json()
@@ -224,16 +241,31 @@ async def test_stock_indicators_series(indicators_client):
     # 升序（最早在前）：第一根 close=100，最后一根 close=159
     assert float(data[0]["close"]) == 100.0
     assert float(data[-1]["close"]) == 159.0
-    # date 透传（KlineBar.date = str(ts.date())）
-    assert data[0]["date"] == dates_in[0]
-    assert data[-1]["date"] == dates_in[-1]
-    # 必备字段
     assert set(data[-1]) >= {"date", "dif", "dea", "hist", "k", "d", "j", "wr", "rsi", "close"}
 
 
 @pytest.mark.asyncio
-async def test_stock_indicators_series_404_when_no_kline(indicators_client):
-    """无日K数据：返回 404。"""
+async def test_stock_indicators_fallback_realtime(indicators_client):
+    """stock_metric 不足 → 回退实时算（读 daily_kline）。"""
+    from datetime import date, timedelta
+
+    client, SessionLocal = indicators_client
+    # 无 stock_metric；seed 60 行 daily_kline（valid 日期）
+    dates_in = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(60)]
+    async with SessionLocal() as s:
+        for ds in dates_in:
+            s.add(DailyKline(ts=trading_day_ts(ds), secucode="600519.SH",
+                             open=100, close=100, high=101, low=99, volume=1000,
+                             amount=1e7, turnover_rate=0, pct_change=1.0, vwap=100))
+        await s.commit()
+    r = await client.get("/api/stocks/600519.SH/indicators?count=60")
+    assert r.status_code == 200
+    assert len(r.json()) == 60  # 回退实时算给满 60 根
+
+
+@pytest.mark.asyncio
+async def test_stock_indicators_404_when_no_data(indicators_client):
+    """无 stock_metric 且无 daily_kline：返回 404。"""
     client, _ = indicators_client
     r = await client.get("/api/stocks/000001.SZ/indicators?count=60")
     assert r.status_code == 404

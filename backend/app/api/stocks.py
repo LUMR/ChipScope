@@ -9,6 +9,7 @@ from app.models.flow import MoneyFlow
 from app.models.holder import TopHolder
 from app.models.kline import DailyKline
 from app.models.stock import StockMeta
+from app.models.stock_metric import StockMetric
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.types import KlineBar
 from app.services.indicator import indicator_series
@@ -92,9 +93,29 @@ async def get_indicators(
 ):
     """每根日K的技术指标时序（供副图画 MACD/KDJ/WR/RSI 曲线）。
 
-    返回升序（最早在前），每元素含 {date, close, dif, dea, hist, k, d, j, wr, rsi}。
+    优先查 stock_metric 物化表（行数 >= count 直接用）；不足则回退实时算
+    （读 daily_kline → indicator_series）。返回升序（最早在前），
+    每元素含 {date, close, dif, dea, hist, k, d, j, wr, rsi}。
     """
+    # 优先查 stock_metric 时序
     rows = (
+        await db.execute(
+            select(StockMetric)
+            .where(StockMetric.secucode == secucode)
+            .order_by(StockMetric.trade_date.desc())
+            .limit(count)
+        )
+    ).scalars().all()
+    if len(rows) >= count:
+        rows = list(reversed(rows))  # desc 取后再翻为升序
+        return [{
+            "date": str(r.trade_date), "close": float(r.close),
+            "dif": float(r.dif), "dea": float(r.dea), "hist": float(r.hist),
+            "k": float(r.k), "d": float(r.d), "j": float(r.j),
+            "wr": float(r.wr), "rsi": float(r.rsi),
+        } for r in rows]
+    # 不足 → 回退实时算（读 daily_kline）
+    krows = (
         await db.execute(
             select(DailyKline)
             .where(DailyKline.secucode == secucode)
@@ -102,15 +123,15 @@ async def get_indicators(
             .limit(count)
         )
     ).scalars().all()
-    if not rows:
+    if not krows:
         raise HTTPException(status_code=404, detail="no kline")
-    rows = list(reversed(rows))  # desc 取后再翻为升序
+    krows = list(reversed(krows))  # desc 取后再翻为升序
     bars = [
         KlineBar(
             str(r.ts.date()), float(r.open), float(r.close), float(r.high),
             float(r.low), int(r.volume), float(r.amount), float(r.pct_change),
             float(r.turnover_rate), float(r.vwap),
         )
-        for r in rows
+        for r in krows
     ]
     return indicator_series(bars)
