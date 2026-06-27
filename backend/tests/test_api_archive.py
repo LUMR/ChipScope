@@ -20,10 +20,15 @@ from app.services import kline_archive, metric_archive
 
 @pytest.mark.asyncio
 async def test_daily_kline_archive_trigger_and_status(monkeypatch):
+    calls: list[tuple] = []
+
     async def _fake(session_factory, tdx, trade_date, count=250, on_progress=None):
+        calls.append((trade_date, count))
         return {"trade_date": trade_date.strftime("%Y-%m-%d"), "total": 1, "ok": 1, "failed": 0}
 
-    monkeypatch.setattr(kline_archive, "archive_daily_klines", _fake)
+    # 打 import 站点：archive.py 是 `from ... import archive_daily_klines`
+    # 按值绑定本地名，必须改 archive 模块的属性才能让 _run_daily_kline_archive 调到 fake。
+    monkeypatch.setattr("app.api.archive.archive_daily_klines", _fake)
     kline_archive.reset_daily_kline_archive_state()
 
     transport = ASGITransport(app=app)
@@ -31,8 +36,23 @@ async def test_daily_kline_archive_trigger_and_status(monkeypatch):
         r = await ac.post("/api/archive/daily?count=10")
         assert r.status_code == 202
         assert "trade_date" in r.json()
-        s = await ac.get("/api/archive/daily/status")
-        assert s.status_code == 200
+        # 后台任务由 ASGI app 同一 loop 的 asyncio.create_task 调度，
+        # 短轮询有界等待它跑完并落到内存状态。
+        status = None
+        for _ in range(40):  # ≤2s 硬上限，防 hang
+            await asyncio.sleep(0.05)
+            s = await ac.get("/api/archive/daily/status")
+            assert s.status_code == 200
+            status = s.json()
+            if status and status.get("state") == "done":
+                break
+        # 证明 fake 真的被调到（不是空 DB 下真函数的偶然成功）
+        assert calls, "fake archive_daily_klines was never called — patch ineffective"
+        # 证明 fake 的返回值已贯穿进 status
+        assert status is not None
+        assert status["state"] == "done"
+        assert status["ok"] == 1
+        assert status["total"] == 1
 
 
 @pytest.mark.asyncio
