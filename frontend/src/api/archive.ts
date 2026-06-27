@@ -47,3 +47,11 @@ export const triggerDailyKlineArchive = (count = 250) =>
 
 export const getDailyKlineArchiveStatus = () =>
   apiGet<ArchiveStatus | null>("/archive/daily/status");
+
+export const triggerMetricsArchive = (days = "60") =>
+  apiPost<{ task_id: string; trade_date: string }>(
+    `/archive/metrics?days=${days}`
+  );
+
+export const getMetricsArchiveStatus = () =>
+  apiGet<ArchiveStatus | null>("/archive/metrics/status");
