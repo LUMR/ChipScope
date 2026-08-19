@@ -9,10 +9,12 @@ from app.models.base import Base
 class DailyKline(Base):
     __tablename__ = "daily_kline"
 
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    # PK 列序 (secucode, ts) 与迁移 0001 保持一致：按股查最近 N 根可走 PK
+    # backward scan（secucode 等值 + ts 范围/倒序）
     secucode: Mapped[str] = mapped_column(
         String(12), ForeignKey("stock_meta.secucode"), primary_key=True
     )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     open: Mapped[float] = mapped_column(Numeric(10, 3))
     close: Mapped[float] = mapped_column(Numeric(10, 3))
     high: Mapped[float] = mapped_column(Numeric(10, 3))
