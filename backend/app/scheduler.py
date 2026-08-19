@@ -23,6 +23,11 @@ from app.services.kline_archive import (
     archive_daily_klines,
     is_daily_kline_archive_running,
 )
+from app.services.metric_archive import (
+    archive_daily_metrics,
+    is_metrics_archive_running,
+    set_metrics_archive_running,
+)
 from app.services.kline_chip import ingest_kline_and_chips
 from app.services.minute_archive import archive_minute_quotes
 from app.services.realtime import cache_quote, manager
@@ -196,13 +201,41 @@ async def daily_kline_archive() -> None:
         tdx.close()
 
 
+async def daily_metrics_archive() -> None:
+    """16:15 增量预计算全市场当日指标 → stock_metric。
+
+    全市场 TCP 回档（16:10 daily_kline_archive）可能超过 5 分钟——若不等待就读
+    daily_kline，会把「尚未回档的股票」按昨日的 K 线算指标、盖成当日戳。故先轮询
+    等待其完成（最长 1 小时，超时放弃本次）。只读 daily_kline，不依赖 TdxClient。
+
+    运行期间置 is_metrics_archive_running，与手动 POST /api/archive/metrics 双向互斥。
+    """
+    if is_metrics_archive_running():
+        print("[daily_metrics_archive] 已有手动触发的指标物化在跑，跳过本次 cron")
+        return
+    waited = 0
+    while is_daily_kline_archive_running() and waited < 3600:
+        if waited == 0:
+            print("[daily_metrics_archive] 日K回档仍在进行，等待其完成…")
+        await asyncio.sleep(30)
+        waited += 30
+    if is_daily_kline_archive_running():
+        print("[daily_metrics_archive] 等待日K回档超时（1h），放弃本次物化")
+        return
+    set_metrics_archive_running(True)
+    try:
+        await archive_daily_metrics(SessionLocal, _today_cst())
+    finally:
+        set_metrics_archive_running(False)
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
     供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
     任务编排一致：实时行情每 3s + 每日 15:30 分时存档 +
     16:00 采集股东/资金流 + 16:05 增量拉自选股日K/重算筹码 +
-    16:10 增量回档全市场日K。
+    16:10 增量回档全市场日K + 16:15 增量预计算全市场指标。
     """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
@@ -216,6 +249,10 @@ def build_scheduler() -> AsyncIOScheduler:
         daily_kline_archive, CronTrigger(hour=16, minute=10),
         id="daily_kline_archive",
     )
+    sched.add_job(
+        daily_metrics_archive, CronTrigger(hour=16, minute=15),
+        id="daily_metrics_archive",
+    )
     return sched
 
 
@@ -223,7 +260,7 @@ async def _amain() -> None:
     await seed_watchlist_if_empty()
     sched = build_scheduler()
     sched.start()
-    print("scheduler started: realtime every 3s, archive at 15:30, holders/flow at 16:00, kline/chip at 16:05 (Asia/Shanghai)")
+    print("scheduler started: realtime every 3s, archive at 15:30, holders/flow at 16:00, kline/chip at 16:05, metric at 16:15 (Asia/Shanghai)")
     stop = asyncio.Event()
     try:
         await stop.wait()  # 永远等待，保持 loop 运行
