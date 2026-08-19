@@ -6,9 +6,11 @@ import {
   getArchiveStatus,
   getChipBackfillStatus,
   getDailyKlineArchiveStatus,
+  getMetricsArchiveStatus,
   triggerArchive,
   triggerChipBackfill,
   triggerDailyKlineArchive,
+  triggerMetricsArchive,
 } from "../api/archive";
 
 const { Text } = Typography;
@@ -25,6 +27,10 @@ export default function ArchivePage() {
   const [klineStatus, setKlineStatus] = useState<ArchiveStatus | null>(null);
   const [klineCount, setKlineCount] = useState<number>(250);
   const [klineLoading, setKlineLoading] = useState(false);
+
+  const [metricStatus, setMetricStatus] = useState<ArchiveStatus | null>(null);
+  const [metricDays, setMetricDays] = useState<string>("60");
+  const [metricLoading, setMetricLoading] = useState(false);
 
   // 分时存档：首次加载 + 运行中轮询
   useEffect(() => {
@@ -58,6 +64,19 @@ export default function ArchivePage() {
     const timer = setInterval(async () => {
       try {
         setKlineStatus(await getDailyKlineArchiveStatus());
+      } catch {
+        /* ignore */
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 指标物化：首次加载 + 运行中轮询
+  useEffect(() => {
+    getMetricsArchiveStatus().then(setMetricStatus);
+    const timer = setInterval(async () => {
+      try {
+        setMetricStatus(await getMetricsArchiveStatus());
       } catch {
         /* ignore */
       }
@@ -117,6 +136,23 @@ export default function ArchivePage() {
     }
   };
 
+  const triggerMetric = async () => {
+    setMetricLoading(true);
+    try {
+      await triggerMetricsArchive(metricDays);
+      message.success("已开始物化，请关注进度");
+    } catch (e: unknown) {
+      const msg = String((e as Error | undefined)?.message ?? e);
+      if (msg.includes("409")) {
+        message.warning("已有物化任务在运行");
+      } else {
+        message.error(msg);
+      }
+    } finally {
+      setMetricLoading(false);
+    }
+  };
+
   const running = status?.state === "running";
   const pct =
     status && status.total > 0
@@ -133,6 +169,12 @@ export default function ArchivePage() {
   const klinePct =
     klineStatus && klineStatus.total > 0
       ? Math.round((klineStatus.done / klineStatus.total) * 100)
+      : 0;
+
+  const metricRunning = metricStatus?.state === "running";
+  const metricPct =
+    metricStatus && metricStatus.total > 0
+      ? Math.round((metricStatus.done / metricStatus.total) * 100)
       : 0;
 
   return (
@@ -274,6 +316,57 @@ export default function ArchivePage() {
                 <Text type="danger">失败 {klineStatus.failed}</Text>
               </Space>
               {klineStatus.error && <Text type="danger">错误：{klineStatus.error}</Text>}
+            </div>
+          )}
+        </Space>
+      </Card>
+
+      <Card title="指标物化">
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <div>
+            <Text type="secondary">
+              盘后预计算全市场技术指标（MACD/KDJ/WR/RSI 共振）入 stock_metric，每日 16:15 增量。
+              选股筛选/副图查此表，秒级响应。首次可选 60/250/all 回填历史。
+            </Text>
+          </div>
+          <Space>
+            <Select
+              value={metricDays}
+              onChange={setMetricDays}
+              style={{ width: 140 }}
+              options={[
+                { value: "60", label: "最近 60 天" },
+                { value: "250", label: "最近 250 天" },
+                { value: "all", label: "全部（daily_kline 已有）" },
+              ]}
+            />
+            <Button
+              type="primary"
+              loading={metricLoading}
+              onClick={triggerMetric}
+              disabled={metricRunning}
+            >
+              {metricRunning ? "物化中…" : "开始物化"}
+            </Button>
+          </Space>
+          {metricStatus && metricStatus.state && (
+            <div>
+              <Space>
+                <Tag color={metricStatus.state === "done" ? "green" : metricStatus.state === "error" ? "red" : "blue"}>
+                  {metricStatus.state}
+                </Tag>
+                <Text>窗口：{metricStatus.trade_date ?? "-"}</Text>
+              </Space>
+              <Progress
+                percent={metricPct}
+                status={metricStatus.state === "error" ? "exception" : metricRunning ? "active" : "normal"}
+              />
+              <Space size="large">
+                <Text>总计 {metricStatus.total}</Text>
+                <Text type="success">成功 {metricStatus.ok}</Text>
+                <Text type="danger">失败 {metricStatus.failed}</Text>
+              </Space>
+              {metricStatus.error && <Text type="danger">错误：{metricStatus.error}</Text>}
             </div>
           )}
         </Space>
