@@ -59,7 +59,7 @@ async def api_client(sample_stocks, sample_klines, sample_holders, sample_flows)
 
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"
+            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, stock_metric CASCADE"
         ))
     async with SessionLocal() as s:
         s.add_all(sample_stocks)
@@ -86,7 +86,7 @@ async def api_client(sample_stocks, sample_klines, sample_holders, sample_flows)
     app.dependency_overrides.clear()
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"
+            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, stock_metric CASCADE"
         ))
     await engine.dispose()
 
@@ -175,7 +175,7 @@ async def indicators_client():
 
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"
+            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, stock_metric CASCADE"
         ))
 
     dates_in = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(60)]
@@ -208,7 +208,7 @@ async def indicators_client():
     app.dependency_overrides.clear()
     async with engine.begin() as conn:
         await conn.execute(text(
-            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow CASCADE"
+            "TRUNCATE stock_meta, daily_kline, top_holders, holder_summary, money_flow, stock_metric CASCADE"
         ))
     await engine.dispose()
 
@@ -237,3 +237,119 @@ async def test_stock_indicators_series_404_when_no_kline(indicators_client):
     client, _ = indicators_client
     r = await client.get("/api/stocks/000001.SZ/indicators?count=60")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stock_indicators_from_metric():
+    """副图优先查 stock_metric（注入可区分值 dif=999 验证走表路径）。"""
+    from datetime import date, timedelta
+    from app.models.base import Base
+    from app.models.stock_metric import StockMetric
+
+    engine = create_async_engine(get_settings().database_url)
+    SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "TRUNCATE stock_meta, daily_kline, stock_metric CASCADE"
+        ))
+    async with SessionLocal() as s:
+        s.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
+                        market="SH", secid="1.600519"))
+        await s.commit()  # meta 先落库（stock_metric 有 FK→stock_meta）
+        for i in range(60):
+            s.add(StockMetric(
+                trade_date=date(2026, 1, 1) + timedelta(days=i),
+                secucode="600519.SH",
+                close=100.0 + i, open=100.0, dif=999.0, dea=0.5, hist=1.0,
+                k=50.0, d=48.0, j=54.0, wr=60.0, rsi=55.0, prev_rsi=52.0,
+                ma5=100.0, ma10=100.0, ma20=100.0, ma60=100.0, ma20_prev5=100.0,
+                high20_prev=100.0, high60_prev=100.0, vol_ratio=1.0, pct5=1.0,
+                consecutive_green=1, pct_change=1.0,
+                score=2, signal_level="bull",
+                macd_signal=1, kdj_signal=1, wr_signal=0, rsi_signal=0,
+            ))
+        await s.commit()
+
+    async def override_get_db():
+        async with SessionLocal() as session:
+            yield session
+
+    from app.api.deps import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/stocks/600519.SH/indicators?count=60")
+    app.dependency_overrides.clear()
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 60
+    # 关键断言：dif=999 证明走了查表路径（实时算不可能出 999）
+    assert data[-1]["dif"] == 999.0
+    assert set(data[-1]) >= {"date", "dif", "dea", "hist", "k", "d", "j", "wr", "rsi", "close"}
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stock_indicators_fallback_when_metric_stale():
+    """物化最新日落后于 daily_kline（16:15 cron 漏跑）→ 回退实时算（dif != 999）。"""
+    from datetime import date, datetime, timedelta, timezone
+    from app.models.base import Base
+    from app.models.stock_metric import StockMetric
+
+    engine = create_async_engine(get_settings().database_url)
+    SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "TRUNCATE stock_meta, daily_kline, stock_metric CASCADE"
+        ))
+    async with SessionLocal() as s:
+        s.add(StockMeta(secucode="600519.SH", code="600519", name="贵州茅台",
+                        market="SH", secid="1.600519"))
+        await s.commit()  # meta 先落库（daily_kline/stock_metric 有 FK→stock_meta）
+        # kline 61 根（1/1..3/2），metric 只物化到 3/1（60 行）
+        for i in range(61):
+            d = date(2026, 1, 1) + timedelta(days=i)
+            s.add(DailyKline(
+                ts=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+                secucode="600519.SH",
+                open=100.0, close=100.0 + i, high=101.0, low=99.0,
+                volume=1000, amount=1e7, turnover_rate=0.5, pct_change=1.0, vwap=100.0,
+            ))
+        for i in range(60):
+            s.add(StockMetric(
+                trade_date=date(2026, 1, 1) + timedelta(days=i),
+                secucode="600519.SH",
+                close=100.0 + i, open=100.0, dif=999.0, dea=0.5, hist=1.0,
+                k=50.0, d=48.0, j=54.0, wr=60.0, rsi=55.0, prev_rsi=52.0,
+                ma5=100.0, ma10=100.0, ma20=100.0, ma60=100.0, ma20_prev5=100.0,
+                high20_prev=100.0, high60_prev=100.0, vol_ratio=1.0, pct5=1.0,
+                consecutive_green=1, pct_change=1.0,
+                score=2, signal_level="bull",
+                macd_signal=1, kdj_signal=1, wr_signal=0, rsi_signal=0,
+            ))
+        await s.commit()
+
+    async def override_get_db():
+        async with SessionLocal() as session:
+            yield session
+
+    from app.api.deps import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/stocks/600519.SH/indicators?count=60")
+    app.dependency_overrides.clear()
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 60
+    assert data[-1]["date"] == "2026-03-02"  # 实时算到 kline 最新一根
+    assert data[-1]["dif"] != 999.0          # 回退路径，非物化标记值
+    await engine.dispose()

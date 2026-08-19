@@ -1,11 +1,14 @@
 """分时存档触发与状态查询。"""
 import asyncio
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func, select
 
 from app.database import SessionLocal
+from app.models.kline import DailyKline
 from app.schemas.archive import (
     ArchiveStatusOut,
     ArchiveTriggerResponse,
@@ -28,6 +31,13 @@ from app.services.kline_archive import (
     is_daily_kline_archive_running,
     set_daily_kline_archive_running,
     set_daily_kline_archive_status,
+)
+from app.services.metric_archive import (
+    archive_metrics_range,
+    get_metrics_archive_status,
+    is_metrics_archive_running,
+    set_metrics_archive_running,
+    set_metrics_archive_status,
 )
 from app.services.minute_archive import (
     _today_cst,
@@ -236,3 +246,64 @@ async def trigger_daily_kline_archive(count: int = Query(250, ge=10, le=1000)):
 @router.get("/daily/status", response_model=ArchiveStatusOut | None)
 async def daily_kline_archive_status():
     return get_daily_kline_archive_status()
+
+
+# ── 指标物化 ──────────────────────────────────────────────
+
+_metric_tasks: set[asyncio.Task] = set()
+
+
+async def _run_metrics_archive(days_str: str) -> None:
+    """后台物化：遍历全市场 daily_kline → compute_indicators → upsert stock_metric。"""
+    started = _now_ts()
+    end = _today_cst()
+    if days_str == "all":
+        async with SessionLocal() as s:
+            start = (await s.execute(select(func.min(DailyKline.ts)))).scalar()
+            start = start.date() if start else end - timedelta(days=365)
+    else:
+        start = end - timedelta(days=int(days_str))
+    window = f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
+    set_metrics_archive_status({
+        "state": "running", "trade_date": window,
+        "total": 0, "done": 0, "ok": 0, "failed": 0,
+        "started_at": started, "finished_at": None, "error": None,
+    })
+    try:
+        def on_progress(done, total, failed):
+            set_metrics_archive_status({
+                "state": "running", "trade_date": window,
+                "total": total, "done": done, "ok": done - failed, "failed": failed,
+                "started_at": started, "finished_at": None, "error": None,
+            })
+        result = await archive_metrics_range(SessionLocal, start, end, on_progress=on_progress)
+        set_metrics_archive_status({
+            "state": "done", "trade_date": window,
+            "total": result["total"], "done": result["total"],
+            "ok": result["ok"], "failed": result["failed"],
+            "started_at": started, "finished_at": _now_ts(), "error": None,
+        })
+    except Exception as e:
+        set_metrics_archive_status({
+            "state": "error", "trade_date": window,
+            "total": 0, "done": 0, "ok": 0, "failed": 0,
+            "started_at": started, "finished_at": _now_ts(), "error": str(e),
+        })
+    finally:
+        set_metrics_archive_running(False)
+
+
+@router.post("/metrics", response_model=ArchiveTriggerResponse, status_code=202)
+async def trigger_metrics_archive(days: Literal["60", "250", "all"] = Query("60")):
+    if is_metrics_archive_running():
+        raise HTTPException(status_code=409, detail="metrics archive already running")
+    set_metrics_archive_running(True)
+    task = asyncio.create_task(_run_metrics_archive(days))
+    _metric_tasks.add(task)
+    task.add_done_callback(_metric_tasks.discard)
+    return ArchiveTriggerResponse(task_id=str(_now_ts()), trade_date=days)
+
+
+@router.get("/metrics/status", response_model=ArchiveStatusOut | None)
+async def metrics_archive_status():
+    return get_metrics_archive_status()

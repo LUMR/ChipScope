@@ -1,13 +1,14 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.models.flow import MoneyFlow
 from app.models.holder import TopHolder
 from app.models.kline import DailyKline
+from app.models.stock_metric import StockMetric
 from app.models.stock import StockMeta
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.types import KlineBar
@@ -94,6 +95,27 @@ async def get_indicators(
 
     返回升序（最早在前），每元素含 {date, close, dif, dea, hist, k, d, j, wr, rsi}。
     """
+    # 优先查 stock_metric 时序；行数不足，或物化最新日落后于 daily_kline
+    # （16:15 cron 漏跑/失败）时回退实时算，避免副图与主 K 线图日期错位
+    mrows = (await db.execute(
+        select(StockMetric).where(StockMetric.secucode == secucode)
+        .order_by(StockMetric.trade_date.desc()).limit(count)
+    )).scalars().all()
+    kline_latest = (await db.execute(
+        select(func.max(DailyKline.ts)).where(DailyKline.secucode == secucode)
+    )).scalar()
+    if (
+        len(mrows) >= count
+        and (kline_latest is None or mrows[0].trade_date >= kline_latest.date())
+    ):
+        mrows = list(reversed(mrows))
+        return [{
+            "date": str(r.trade_date), "close": float(r.close),
+            "dif": float(r.dif), "dea": float(r.dea), "hist": float(r.hist),
+            "k": float(r.k), "d": float(r.d), "j": float(r.j),
+            "wr": float(r.wr), "rsi": float(r.rsi),
+        } for r in mrows]
+    # 回退实时算（读 daily_kline）
     rows = (
         await db.execute(
             select(DailyKline)
