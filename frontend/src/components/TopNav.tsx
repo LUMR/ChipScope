@@ -17,6 +17,8 @@ export default function TopNav() {
     ? "minute"
     : loc.pathname.startsWith("/screener")
     ? "screener"
+    : loc.pathname.startsWith("/alerts")
+    ? "alerts"
     : "market";
 
   return (
@@ -30,6 +32,7 @@ export default function TopNav() {
           { key: "market", label: "自选行情", onClick: () => nav("/") },
           { key: "minute", label: "行情", onClick: () => nav("/market") },
           { key: "screener", label: "选股", onClick: () => nav("/screener") },
+          { key: "alerts", label: "盯盘告警", onClick: () => nav("/alerts") },
           { key: "watchlist", label: "自选管理", onClick: () => nav("/watchlist") },
           { key: "archive", label: "数据存档", onClick: () => nav("/archive") },
         ]}

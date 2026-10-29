@@ -1,12 +1,15 @@
 """定时调度入口：python -m app.scheduler
 
-- 盘中每 3s 拉取自选股（DB watchlist 表）实时行情 → Redis 缓存 + WebSocket 广播
+- 盘中每 3s 拉取自选股（DB watchlist 表）∪ 活跃告警规则股票 实时行情
+  → Redis 缓存 + WebSocket 广播 + realtime 告警评估（限交易时段）
 - 每交易日 16:00 采集股东 + 资金流（东财）
-- 每交易日 16:05 增量拉自选股日K + 重算筹码分布
+- 每交易日 16:05 增量拉自选股 ∪ 告警股票 日K + 重算筹码分布
 - 每交易日 15:30 存档全市场当天分时数据（mootdx TCP）
+- 每交易日 16:20 日级告警评估（chip/pattern 条件）
 - watchlist 表为空时，用 CHIPSCOPE_WATCHLIST_DEFAULT 环境变量 seed
 """
 import asyncio
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -16,6 +19,13 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.models.stock import StockMeta
 from app.models.watchlist import Watchlist
+from app.services.alert_engine import (
+    edge_state,
+    evaluate_daily,
+    evaluate_realtime,
+    in_trading_window,
+    load_active_rules,
+)
 from app.services.collector.eastmoney import EastMoneyClient
 from app.services.collector.tdx_client import TdxClient
 from app.services.ingest import upsert_holders, upsert_money_flow
@@ -97,10 +107,16 @@ async def seed_watchlist_if_empty(session_factory=SessionLocal) -> int:
 
 
 async def realtime_loop() -> None:
-    """盘中实时刷新：每轮从 DB 读自选股，拉行情 → Redis + 全局广播。"""
-    secucodes = await read_watchlist_secucodes()
+    """盘中实时刷新：每轮从 DB 读自选股 ∪ 活跃告警股票，拉行情 → Redis +
+    全局广播；交易时段内再做 realtime 告警评估（评估自带时段闸门，
+    realtime_loop 24/7 运行不判时段，防盘后电平条件整夜重复触发）。"""
+    watchlist = await read_watchlist_secucodes()
+    rules, names = await load_active_rules(SessionLocal)
+    alert_codes = sorted({c for r in rules for c in (r.secucodes or [])})
+    secucodes = list(dict.fromkeys(watchlist + alert_codes))  # 去重保序
     if not secucodes:
         return
+    trading = in_trading_window(datetime.now(timezone.utc))
     tdx = TdxClient()
     try:
         for secucode in secucodes:
@@ -121,6 +137,10 @@ async def realtime_loop() -> None:
                         "asks": q.asks,
                     }
                 )
+                if rules and trading:
+                    await evaluate_realtime(
+                        SessionLocal, rules, names, secucode, q, edge_state
+                    )
             except Exception as e:  # 单只失败不影响其他
                 print(f"[realtime] {secucode} error: {e}")
     finally:
@@ -142,21 +162,36 @@ async def daily_holders_flow() -> None:
 
 
 async def daily_kline_chip() -> None:
-    """16:05 增量拉 watchlist 自选股日K + 重算筹码（mootdx TCP，绕过东财反爬）。
+    """16:05 增量拉 watchlist ∪ 活跃告警规则股票 日K + 重算筹码（mootdx TCP，绕过东财反爬）。
 
-    盘后任务，错开 16:00 holders/flow 任务 5 分钟。遍历 watchlist（用户关心的子集），
-    单只 try/except 不影响其他。TdxClient 全任务复用一个连接。
+    盘后任务，错开 16:00 holders/flow 任务 5 分钟。告警规则日级条件（chip/pattern）
+    依赖筹码快照，故计算范围并入告警股票。单只 try/except 不影响其他；
+    stock_meta 缺失的告警股票打日志跳过（后续 watchlist/API 补录后自然纳入）。
+    TdxClient 全任务复用一个连接。
     """
+    watchlist = await read_watchlist_secucodes()
+    rules, _ = await load_active_rules(SessionLocal)
+    alert_codes = sorted({c for r in rules for c in (r.secucodes or [])})
+    codes = list(dict.fromkeys(watchlist + alert_codes))  # 去重保序
     tdx = TdxClient()
     try:
         async with EastMoneyClient() as em, SessionLocal() as session:
-            stmt = (
-                select(Watchlist.secucode, StockMeta.secid)
-                .join(StockMeta, Watchlist.secucode == StockMeta.secucode)
-                .where(Watchlist.scope == SCOPE)
+            secid_map = dict(
+                (
+                    await session.execute(
+                        select(StockMeta.secucode, StockMeta.secid).where(
+                            StockMeta.secucode.in_(codes)
+                        )
+                    )
+                ).all()
             )
-            rows = (await session.execute(stmt)).all()
-            for secucode, secid in rows:
+            missing = [c for c in codes if c not in secid_map]
+            if missing:
+                print(f"[daily_kline_chip] stock_meta 缺失，跳过: {missing}")
+            for secucode in codes:
+                secid = secid_map.get(secucode)
+                if not secid:
+                    continue
                 try:
                     r = await ingest_kline_and_chips(
                         tdx, em, session, secucode, secid,
@@ -229,13 +264,29 @@ async def daily_metrics_archive() -> None:
         set_metrics_archive_running(False)
 
 
+async def daily_alerts() -> None:
+    """16:20 日级告警评估（chip/pattern 条件，读 16:05 重算的筹码快照）。
+
+    独立 cron 而非链在 daily_kline_chip 末尾：失败隔离、可测；
+    alert_event.trade_date 去重使重复评估安全。仅评快照新鲜的股票：若 16:05
+    任务超时跨过 16:20，未算到的股票当天直接跳过（次日恢复），不评旧快照。
+    """
+    try:
+        n = await evaluate_daily(SessionLocal)
+        if n:
+            print(f"[daily_alerts] 触发 {n} 条日级告警")
+    except Exception as e:
+        print(f"[daily_alerts] error: {e}")
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """构造配置好但未启动的调度器。
 
     供 FastAPI lifespan 与 `python -m app.scheduler` 复用，保证两条入口的
     任务编排一致：实时行情每 3s + 每日 15:30 分时存档 +
-    16:00 采集股东/资金流 + 16:05 增量拉自选股日K/重算筹码 +
-    16:10 增量回档全市场日K + 16:15 增量预计算全市场指标。
+    16:00 采集股东/资金流 + 16:05 增量拉自选股∪告警股票日K/重算筹码 +
+    16:10 增量回档全市场日K + 16:15 增量预计算全市场指标 +
+    16:20 日级告警评估。
     """
     sched = AsyncIOScheduler(timezone="Asia/Shanghai")
     sched.add_job(realtime_loop, "interval", seconds=3, id="realtime")
@@ -253,6 +304,10 @@ def build_scheduler() -> AsyncIOScheduler:
         daily_metrics_archive, CronTrigger(hour=16, minute=15),
         id="daily_metrics_archive",
     )
+    sched.add_job(
+        daily_alerts, CronTrigger(hour=16, minute=20),
+        id="daily_alerts",
+    )
     return sched
 
 
@@ -260,7 +315,7 @@ async def _amain() -> None:
     await seed_watchlist_if_empty()
     sched = build_scheduler()
     sched.start()
-    print("scheduler started: realtime every 3s, archive at 15:30, holders/flow at 16:00, kline/chip at 16:05, metric at 16:15 (Asia/Shanghai)")
+    print("scheduler started: realtime every 3s, archive at 15:30, holders/flow at 16:00, kline/chip at 16:05, metric at 16:15, alerts at 16:20 (Asia/Shanghai)")
     stop = asyncio.Event()
     try:
         await stop.wait()  # 永远等待，保持 loop 运行

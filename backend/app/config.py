@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # 前端构建产物目录（npm run build 输出）；空串则自动探测 <项目根>/frontend/dist。
     frontend_dist: str = ""
 
+    # 盯盘告警：全局默认企业微信机器人 webhook（规则未单独配置时使用）
+    alert_webhook_url: str = ""
+    # 告警消息「查看个股」链接前缀（如 http://host:8001），空则省略链接行
+    alert_link_base: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

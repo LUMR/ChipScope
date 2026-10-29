@@ -67,7 +67,8 @@ Frontend (React SPA, Vite dev proxy)
     ├── /api/*  → FastAPI backend (port 8001)
     │     ├── /api/stocks          — stock list, search, K-line, holders, flow
     │     ├── /api/stocks/{code}/chips — chip distribution (latest + history)
-    │     └── /api/stocks/{code}/pattern — pattern recognition
+    │     ├── /api/stocks/{code}/pattern — pattern recognition
+    │     └── /api/alerts          — realtime alert rules CRUD + events + test send
     │
     └── /ws/*   → WebSocket (realtime quotes, per-stock fan-out)
           │
@@ -110,6 +111,8 @@ with an SPA fallback) all on :8001. Frontend dev with HMR still uses `npm run de
 | `backend/app/api/` | FastAPI routers (stocks, chips, websocket) |
 | `backend/app/services/collector/` | Data source clients (eastmoney HTTP, tdx TCP) |
 | `backend/app/services/chip_*.py` | Chip engine (pure functions) |
+| `backend/app/services/alert_engine.py` | Alert condition DSL + rule evaluation (realtime tick & daily job) |
+| `backend/app/services/notify.py` | WeCom webhook notifier + markdown rendering |
 | `backend/app/services/ingest.py` | DB upsert logic |
 | `backend/app/services/realtime.py` | Redis cache + WebSocket fan-out |
 | `backend/app/utils/time.py` | Trading day timestamp normalization |
@@ -130,6 +133,8 @@ All prefixed with `CHIPSCOPE_`:
 | `CHIPSCOPE_SCHEDULER_ENABLED` | `true` | Embed APScheduler in the uvicorn process (lifespan); `false` requires running `python -m app.scheduler` separately |
 | `CHIPSCOPE_FRONTEND_DIST` | `<root>/frontend/dist` | Frontend build output dir; enables static SPA hosting on :8001 when index.html exists |
 | `CHIPSCOPE_WATCHLIST` | `600519` | Comma-separated stock codes for realtime monitoring |
+| `CHIPSCOPE_ALERT_WEBHOOK_URL` | `""` | Global default WeCom (企业微信) robot webhook for alert notifications |
+| `CHIPSCOPE_ALERT_LINK_BASE` | `""` | Prefix for the "view stock" link in alert messages; empty omits the link |
 
 ## Conventions
 

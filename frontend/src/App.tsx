@@ -5,6 +5,7 @@ import WatchlistPage from "./pages/WatchlistPage";
 import ArchivePage from "./pages/ArchivePage";
 import MarketMinutePage from "./pages/MarketMinutePage";
 import ScreenerPage from "./pages/ScreenerPage";
+import AlertsPage from "./pages/AlertsPage";
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="/archive" element={<ArchivePage />} />
         <Route path="/market" element={<MarketMinutePage />} />
         <Route path="/screener" element={<ScreenerPage />} />
+        <Route path="/alerts" element={<AlertsPage />} />
       </Route>
     </Routes>
   );

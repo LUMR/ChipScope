@@ -12,6 +12,7 @@ from app.api.watchlist import router as watchlist_router
 from app.api.websocket import router as ws_router
 from app.api.market import router as market_router
 from app.api.screener import router as screener_router
+from app.api.alerts import router as alerts_router
 from app.config import get_settings
 from app.scheduler import build_scheduler, seed_watchlist_if_empty
 
@@ -61,6 +62,7 @@ app.include_router(watchlist_router)
 app.include_router(archive_router)
 app.include_router(market_router)
 app.include_router(screener_router)
+app.include_router(alerts_router)
 
 
 @app.get("/health")
